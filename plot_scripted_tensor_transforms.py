@@ -19,6 +19,7 @@ torch.manual_seed(1)
 ASSETS_PATH = Path(r"C:\Users\97253\OneDrive\שולחן העבודה\final project")
 
 
+
 # טעינת התמונות
 animal1 = decode_image(str(ASSETS_PATH / 'dog.jpg'))
 animal2 = decode_image(str(ASSETS_PATH / 'lion.jpeg'))
