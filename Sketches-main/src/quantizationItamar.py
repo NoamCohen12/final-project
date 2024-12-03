@@ -5,20 +5,99 @@ import numpy as np
 from PIL import Image
 import torch
 import torchvision.transforms as transforms
-from sympy import true
 from torchvision.models import resnet18, ResNet18_Weights
+
+from settings import *
+import Quantizer
 
 # הוספת נתיב לקובץ Quantizer
 sys.path.append(r'/Sketches-main/src')
-import Quantizer
 
 # נתיב לקבצים הדרושים
 ASSETS_PATH = r"/"
-LABELS_FILE = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\imagenet_class_index.json"
 
-# טעינת labels
-with open(LABELS_FILE, 'r') as f:
-    labels = json.load(f)
+
+def uniform_symmetric_quantize(tensor, num_bits=8):
+    """
+    Quantize a tensor using uniform symmetric quantization.
+
+    Args:
+        tensor (torch.Tensor): הטנסור שברצונך לקוונטז.
+        num_bits (int): מספר הביטים לקוונטיזציה.
+
+    Returns:
+        torch.Tensor: הטנסור המקוונטז.
+    """
+    # חישוב הטווח
+    max_val = tensor.abs().max()
+    scale = max_val / (2 ** (num_bits - 1) - 1)
+
+    # קוונטיזציה
+    quantized = torch.clamp((tensor / scale).round(), -2 ** (num_bits - 1) + 1, 2 ** (num_bits - 1) - 1)
+
+    # דה-קוונטיזציה
+    dequantized = quantized * scale
+
+    return dequantized
+
+
+def quantize_on_layer_uniform(tensor, num_bits=8) -> torch.Tensor:
+    """
+    מבצע קוונטיזציה אחידה סימטרית עבור שכבה נתונה.
+
+    Args:
+        tensor (torch.Tensor): הטנסור שברצונך לקוונטז.
+        num_bits (int): מספר הביטים לקוונטיזציה.
+
+    Returns:
+        torch.Tensor: הטנסור המקוונטז.
+    """
+    if tensor is None or torch.isnan(tensor).any():
+        print("Warning: Input tensor contains NaN values or is None")
+        return tensor
+
+    quantized_tensor = uniform_symmetric_quantize(tensor, num_bits=num_bits)
+
+    # בדיקת NaNs
+    if torch.isnan(quantized_tensor).any():
+        print("Error: NaN values detected in quantized tensor")
+        return tensor  # מחזירים את הטנסור המקורי במקרה של תקלה
+
+    return quantized_tensor
+
+
+def quantize_all_layers_uniform(model, num_bits=8):
+    """
+    מבצע קוונטיזציה אחידה סימטרית על כל השכבות במודל.
+
+    Args:
+        model (torch.nn.Module): המודל שברצונך לקוונטז.
+        num_bits (int): מספר הביטים לקוונטיזציה.
+
+    Returns:
+        torch.nn.Module: המודל המקוונטז.
+    """
+    for name, layer in model.named_modules():
+        if isinstance(layer, (torch.nn.Conv2d, torch.nn.Linear)):
+            print(f"Quantizing weights for layer: {name}")
+
+            if layer.weight.dtype == torch.float64:
+                layer.weight.data = layer.weight.data.float()
+
+            # קוונטיזציה של המשקולות
+            quantized_weights = quantize_on_layer_uniform(layer.weight.data, num_bits=num_bits)
+            layer.weight.data = quantized_weights
+            print(f'{name}: {layer.weight.data.flatten()[:5]}')
+
+            # קוונטיזציה של ה-bias אם קיים
+            if layer.bias is not None:
+                if layer.bias.dtype == torch.float64:
+                    layer.bias.data = layer.bias.data.float()
+                quantized_bias = quantize_on_layer_uniform(layer.bias.data, num_bits=num_bits)
+                layer.bias.data = quantized_bias
+                print(f'{name}.bias: {layer.bias.data.flatten()[:5]}')
+
+    return model
 
 
 def print_weight_dtypes(model):
@@ -38,11 +117,12 @@ def verify_quantization(model):
         else:
             print(f"No NaN in {name}")
 
-def predict_image(model, image_path):
+
+def predict_image(model, image_path, device='cpu'):
     """
     פונקציה שמבצעת ניבוי עבור תמונה על בסיס מודל נתון
     """
-    model = model.float()  # ודא שהמודל בפורמט float32
+    model = model.to(device).float()  # ודא שהמודל על המכשיר הנכון ובפורמט float32
 
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -51,7 +131,7 @@ def predict_image(model, image_path):
     ])
 
     image = Image.open(image_path).convert('RGB')
-    input_tensor = transform(image).unsqueeze(0).float()
+    input_tensor = transform(image).unsqueeze(0).to(device).float()  # ודא שהקלט על המכשיר הנכון
 
     if torch.isnan(input_tensor).any():
         print("Error: Input tensor contains NaN values")
@@ -71,7 +151,14 @@ def predict_image(model, image_path):
         return None, None
 
     class_index = torch.argmax(probabilities).item()
-    return class_index, probabilities
+
+    # טעינת שמות הקטגוריות מתוך קובץ JSON
+    with open(r"C:\Users\97253\OneDrive\שולחן העבודה\final project\imagenet_class_index.json") as labels_file:
+        labels = json.load(labels_file)
+
+    label = labels[str(class_index)]
+
+    return label, class_index, probabilities
 
 
 def print_weights_after_quantization(model):
@@ -81,14 +168,6 @@ def print_weights_after_quantization(model):
     layer_0_weights = model.layer1[0].conv1.weight.data.numpy()
     flattened_weights = layer_0_weights.flatten()
     print("Values after quantization for layer 0:\n", np.sort(flattened_weights))
-
-
-def custom_quantize(weight_vector, grid):
-    """
-    Apply custom quantization to a weight vector using the specified grid.
-    """
-    quantized_weight, scale, extra_value = Quantizer.quantize(weight_vector, grid)
-    return quantized_weight
 
 
 # def quantize_model(model, use_sign=True):
@@ -105,12 +184,26 @@ def custom_quantize(weight_vector, grid):
 #     # קוונטיזציה למשקלים
 #
 #     return model
+def print_all_5weights(model):
+    """
+      מבצע קוונטיזציה על כל השכבות במודל
+      """
+    for name, layer in model.named_modules():
+        if isinstance(layer, (torch.nn.Conv2d, torch.nn.Linear)):
+            print(f"Quantizing weights for layer: {name}")
 
-def quantize_on_layer(tensor, use_sign=True):
+            if layer.weight.dtype == torch.float64:
+                layer.weight.data = layer.weight.data.float()
+
+            layer.weight.data = quantize_on_layer(layer.weight.data)
+            print(f'{name}: {layer.weight.data.flatten()[:5]}')
+
+
+def quantize_on_layer(tensor, use_sign=True) -> torch.Tensor:
     """
     מבצע קוונטיזציה מותאמת אישית עבור שכבה נתונה
     """
-    print("Original tensor min:", tensor.min().item(), "max:", tensor.max().item())
+    # print("Original tensor min:", tensor.min().item(), "max:", tensor.max().item())
 
     if tensor is None or torch.isnan(tensor).any():
         print("Warning: Input tensor contains NaN values or is None")
@@ -123,6 +216,7 @@ def quantize_on_layer(tensor, use_sign=True):
     tensor_flat = tensor.cpu().numpy().flatten()
 
     try:
+        # קוונטיזציה
         quantized_vec, scale, extra_value = Quantizer.quantize(vec=tensor_flat, grid=grid)
         dequantized_vec = Quantizer.dequantize(quantized_vec, scale, z=extra_value)
 
@@ -130,28 +224,33 @@ def quantize_on_layer(tensor, use_sign=True):
         mse_error = np.mean((tensor_flat - dequantized_vec) ** 2)
         print(f"Quantization MSE error: {mse_error:.6f}")
 
+        # אם הסטייה גבוהה מדי, אפשר לבדוק את הסיבות
+        if mse_error > 1e-4:
+            print("Warning: High MSE error after quantization, might affect model accuracy.")
+
     except Exception as e:
         print(f"Quantization error: {e}")
         return tensor
 
+    # הפיכת הטנזורים למערכת הנתונים של פייתון
     quantized_tensor = torch.from_numpy(dequantized_vec).view(tensor.shape).to(tensor.device, dtype=torch.float32)
-    print("Quantized tensor min:", quantized_tensor.min().item(), "max:", quantized_tensor.max().item())
 
+    # אם יש NaN אחרי הקוונטיזציה, מחזירים את הטנזור המקורי
     if torch.isnan(quantized_tensor).any():
         print("Error: NaN values detected in quantized tensor")
         return tensor  # מחזירים את הטנסור המקורי במקרה של תקלה
 
+    # החזרת הטנזור המקוונטז
     return quantized_tensor
 
 
-# פונקציה שמבצעת קוונטיזציה על כל השכבות במודל
 def quantize_all_layers(model):
     """
-    מבצע קוונטיזציה על כל השכבות במודל
+    מבצע קוונטיזציה רק על השכבה הראשונה במודל
     """
-    for name, layer in model.named_modules():
+    for i, (name, layer) in enumerate(model.named_modules()):
         if isinstance(layer, (torch.nn.Conv2d, torch.nn.Linear)):
-            print(f"Quantizing weights for layer: {name}")
+            print(f"Quantizing weights for the first layer: {name}")
 
             if layer.weight.dtype == torch.float64:
                 layer.weight.data = layer.weight.data.float()
@@ -166,52 +265,76 @@ def quantize_all_layers(model):
     return model
 
 
+verbose = -5  # -1, 0, 2, 3, 4, 5
+
 # טוענים את המודל ומבצעים קוונטיזציה
 model = resnet18(weights=ResNet18_Weights.DEFAULT)
-print("original model")
-print_weight_dtypes(model)  # 32
-# # הדפסת המשקלים של השכבה הראשונה לפני הכימות
-# print("Weights of the first Conv2d layer before quantization:")
-# print(model.conv1.weight.data)
 
-model = quantize_all_layers(model)
-print("model after quantization")
-print_weight_dtypes(model)  # 32
+if verbose == -1:
+    print("Original model")
+    print_all_5weights(model)
+    print("Quantized model")
+    model = quantize_all_layers(model)
+    print_all_5weights(model)
+    error(1)
 
-# for name, param in model.named_parameters():
-#     print(name, param.dtype)
+if verbose == 2:  # print the first 5 weights of the first layer
+    vec2quantize = model.conv1.weight.data.flatten()[:5]  # $$$
+    print(f'b4 {vec2quantize}')  # $$$
+    # quantized_vec = quantize_on_layer(vec2quantize)  # $$$
+    quantized_vec = quantize_on_layer_uniform(vec2quantize, 8)
+    print(f'after {quantized_vec}')  # $$$
+    error(1)
 
-# verify_quantization(model)
+if verbose == 2:  # print the all weights of the first layer
+    vec2quantize = model.conv1.weight.data  # $$$
+    print(f'b4 {vec2quantize}')  # $$$
+    quantized_vec = quantize_on_layer(vec2quantize)  # $$$
+    # quantized_vec = quantize_on_layer_uniform(vec2quantize, 8)
+    print(f'after {quantized_vec}')  # $$$
+    error(1)
 
+if verbose == 4:  # print the all types of the  layers
+    print("original types model")
+    print_weight_dtypes(model)  # 32
+    print("new types model")
+    model = quantize_all_layers(model)
+    print_weight_dtypes(model)  # 32
+    error(1)
 
-# הגדרת נתיב לתמונה שאתה רוצה לנבא עליה
-image_path_dog = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\dog.jpg"  # שם התמונה שלך
-image_path_cat = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\cat.jpeg"  # שם התמונה שלך
-image_path_kite = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\kite.jpg"  # שם התמונה שלך
-image_path_lion = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\lion.jpeg"  # שם התמונה שלך
-image_path_paper = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\paper.jpg"  # שם התמונה שלך
-array_of_path = [image_path_dog]
-for(image_path) in array_of_path:
-    # מבצע את הניבוי על התמונה
-    class_index, probabilities = predict_image(model, image_path)
-    predicted_label = labels[str(class_index)][1]
-    predicted_prob = probabilities[class_index].item() * 100
-    print(f"Prediction: {predicted_label} ({predicted_prob:.2f}%)")
-# # הדפסת המשקלים של השכבה הראשונה אחרי הכימות
-# print("\nWeights of the first Conv2d layer after quantization:")
-# print(model.conv1.weight.data)
+if verbose != -5:
+    model = quantize_all_layers(model)
 
-# # משקלים של השכבה הראשונה (conv1)
-# conv1_weights = model.conv1.weight
-#
-# # הפיכת המשקלים לווקטור חד-ממדי
-# flattened_weights = conv1_weights.view(-1)  # או conv1_weights.flatten()
+if verbose == -5:
+    model = quantize_all_layers_uniform(model)
 
-# # הדפסת המשקלים של השכבה הראשונה לפני הכימות
-# print("Conv1 Weights:")
-# np.set_printoptions(threshold=np.inf)  # הדפסת כל הערכים של המערך ללא קיצוץ
+if verbose == 5:
+    print("new types model")
+    verify_quantization(model)  # check if there are NaN values in the weights
+    error(2)
 
-# print(np.sort(flattened_weights.detach().numpy()))  # הדפס אחרי המרה ל-NumPy
+if verbose == -5:  # test the quantization on 5 images
+    # הגדרת נתיב לתמונה שאתה רוצה לנבא עליה
+    image_path_dog = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\dog.jpg"  # שם התמונה שלך
+    image_path_cat = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\cat.jpeg"  # שם התמונה שלך
+    image_path_kite = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\kite.jpg"  # שם התמונה שלך
+    image_path_lion = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\lion.jpeg"  # שם התמונה שלך
+    image_path_paper = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\paper.jpg"  # שם התמונה שלך
+    array_of_path = [image_path_dog, image_path_cat, image_path_kite, image_path_lion, image_path_paper]
+
+    # הגדרת המכשיר (GPU אם זמין, אחרת CPU)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = model.to(device)
+
+    # ביצוע ניבוי על כל התמונות
+    for image_path in array_of_path:
+        # מבצע את הניבוי על התמונה
+        label, class_index, probabilities = predict_image(model, image_path, device)
+
+        if label:
+            predicted_label = label
+            predicted_prob = probabilities[class_index].item() * 100
+            print(f"Prediction: {predicted_label} (Class Index: {class_index}, Probability: {predicted_prob:.2f}%)")
 
 # # קריאה לפונקציה לביצוע כימות
 # quantize_on_layer(model, use_sign=True, tensor=flattened_weights)
@@ -262,198 +385,3 @@ for(image_path) in array_of_path:
 #
 #     return model
 #
-#
-# # קריאה לפונקציה עם המודל
-# model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
-# quantizeModel(model)
-
-
-import os
-import sys
-import json
-import numpy as np
-from PIL import Image
-import torch
-import torchvision.transforms as transforms
-from torchvision.models import resnet18, ResNet18_Weights
-
-# הוספת נתיב לקובץ Quantizer
-sys.path.append(r'/Sketches-main/src')
-import Quantizer
-
-# נתיב בסיס
-BASE_PATH = r"C:\Users\97253\OneDrive\שולחן העבודה\final project"
-LABELS_FILE = os.path.join(BASE_PATH, "imagenet_class_index.json")
-
-# טעינת labels
-with open(LABELS_FILE, 'r') as f:
-    labels = json.load(f)
-
-
-def print_weight_dtypes(model):
-    """
-    מדפיס את השמות ואת סוגי הנתונים של משקולות (weights) בלבד במודל.
-    """
-    print("===== Weight Dtypes =====")
-    for name, param in model.named_parameters():
-        if "weight" in name:
-            print(f"{name}: {param.dtype}")
-
-
-def verify_quantization(model):
-    """
-    פונקציה שבודקת אם יש ערכי NaN במשקולות המודל לאחר קוונטיזציה.
-    """
-    for name, param in model.named_parameters():
-        if torch.isnan(param).any():
-            print(f"NaN found in {name}")
-        else:
-            print(f"No NaN in {name}")
-
-
-def predict_image(model, image_path):
-    """
-    פונקציה שמבצעת ניבוי עבור תמונה על בסיס מודל נתון
-    """
-    model = model.float()  # ודא שהמודל בפורמט float32
-
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-
-    image = Image.open(image_path).convert('RGB')
-    input_tensor = transform(image).unsqueeze(0).float()
-
-    if torch.isnan(input_tensor).any():
-        print("Error: Input tensor contains NaN values")
-        return None, None
-
-    model.eval()
-    with torch.no_grad():
-        output = model(input_tensor)
-
-    if torch.isnan(output).any():
-        print("Error: Output contains NaN values")
-        return None, None
-
-    probabilities = torch.nn.functional.softmax(output[0], dim=0)
-    if torch.isnan(probabilities).any():
-        print("Error: Probabilities contain NaN values")
-        return None, None
-
-    class_index = torch.argmax(probabilities).item()
-    return class_index, probabilities
-
-
-def quantize_on_layer(tensor, use_sign=True):
-    """
-    מבצע קוונטיזציה מותאמת אישית עבור שכבה נתונה.
-    """
-    print("Original tensor min:", tensor.min().item(), "max:", tensor.max().item())
-
-    if tensor is None or torch.isnan(tensor).any():
-        print("Warning: Input tensor contains NaN values or is None")
-        return tensor
-
-    cntr_size = 8
-    grid = (np.arange(2 ** cntr_size) if use_sign else
-            np.arange(-2 ** (cntr_size - 1) + 1, 2 ** (cntr_size - 1)))
-
-    tensor_flat = tensor.cpu().numpy().flatten()
-
-    try:
-        quantized_vec, scale, extra_value = Quantizer.quantize(vec=tensor_flat, grid=grid)
-        dequantized_vec = Quantizer.dequantize(quantized_vec, scale, z=extra_value)
-
-        # חישוב סטיית השגיאה לאחר דה-קוונטיזציה
-        mse_error = np.mean((tensor_flat - dequantized_vec) ** 2)
-        print(f"Quantization MSE error: {mse_error:.6f}")
-
-    except Exception as e:
-        print(f"Quantization error: {e}")
-        return tensor
-
-    quantized_tensor = torch.from_numpy(dequantized_vec).view(tensor.shape).to(tensor.device, dtype=torch.float32)
-    print("Quantized tensor min:", quantized_tensor.min().item(), "max:", quantized_tensor.max().item())
-
-    if torch.isnan(quantized_tensor).any():
-        print("Error: NaN values detected in quantized tensor")
-        return tensor  # מחזירים את הטנסור המקורי במקרה של תקלה
-
-    return quantized_tensor
-
-
-def quantize_all_layers(model):
-    """
-    מבצע קוונטיזציה על כל השכבות במודל.
-    """
-    for name, layer in model.named_modules():
-        if isinstance(layer, (torch.nn.Conv2d, torch.nn.Linear)):
-            print(f"Quantizing weights for layer: {name}")
-
-            if layer.weight.dtype == torch.float64:
-                layer.weight.data = layer.weight.data.float()
-
-            layer.weight.data = quantize_on_layer(layer.weight.data)
-
-            if layer.bias is not None:
-                if layer.bias.dtype == torch.float64:
-                    layer.bias.data = layer.bias.data.float()
-                layer.bias.data = quantize_on_layer(layer.bias.data)
-
-    return model
-
-
-# טוענים את המודל ומבצעים קוונטיזציה
-model = resnet18(weights=ResNet18_Weights.DEFAULT)
-print("Original model weights:")
-print_weight_dtypes(model)
-
-model = quantize_all_layers(model)
-print("Model after quantization:")
-print_weight_dtypes(model)
-
-# הגדרת נתיבים לתמונות
-image_paths = [
-    os.path.join(BASE_PATH, "dog.jpg"),
-    os.path.join(BASE_PATH, "cat.jpeg"),
-    os.path.join(BASE_PATH, "kite.jpg"),
-    os.path.join(BASE_PATH, "lion.jpeg"),
-    os.path.join(BASE_PATH, "paper.jpg"),
-]
-
-# Initialize a list to store results
-results = []
-
-# Iterate through the image paths and perform predictions
-for image_path in image_paths:
-    class_index, probabilities = predict_image(model, image_path)
-    if class_index is not None:
-        predicted_label = labels[str(class_index)][1]
-        predicted_prob = probabilities[class_index].item() * 100
-        # Print the prediction
-        print(f"Prediction for {os.path.basename(image_path)}: {predicted_label} ({predicted_prob:.2f}%)")
-
-        # Append the results to the list
-        results.append({
-            "image": os.path.basename(image_path),
-            "predicted_label": predicted_label,
-            "confidence": predicted_prob
-        })
-    else:
-        print(f"Prediction failed for {os.path.basename(image_path)}.")
-        results.append({
-            "image": os.path.basename(image_path),
-            "predicted_label": "None",
-            "confidence": 0
-        })
-
-# Save the results to a JSON file
-results_file = "predictions_results.json"
-with open(results_file, "w") as f:
-    json.dump(results, f, indent=4)
-
-print(f"Results saved to {results_file}")
-

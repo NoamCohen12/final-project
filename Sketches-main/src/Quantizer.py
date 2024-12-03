@@ -264,7 +264,7 @@ def calcQuantRoundErr (modes          : list  = [], # modes to be simulated, e.g
             printf (debugFile, f'// mode={mode}\n')
         if mode.startswith('FP'):
             expSize = int(mode.split ('_e')[1])
-            grid                     = getAllValsFP(cntrSize=cntrSize, expSize=expSize, verbose=[], signed=signed)
+            grid                     = grid(cntrSize=cntrSize, expSize=expSize, verbose=[], signed=signed)
             [quantizedVec, scale, z] = quantize(vec=vec2quantize, grid=grid)
             dequantizedVec           = dequantize(vec=quantizedVec, scale=scale, z=z)
             
