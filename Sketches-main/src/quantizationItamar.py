@@ -6,9 +6,7 @@ from PIL import Image
 import torch
 import torchvision.transforms as transforms
 from torchvision.models import resnet18, ResNet18_Weights
-
 from settings import *
-import Quantizer
 
 # הוספת נתיב לקובץ Quantizer
 sys.path.append(r'/Sketches-main/src')
@@ -17,56 +15,132 @@ sys.path.append(r'/Sketches-main/src')
 ASSETS_PATH = r"/"
 
 
-def uniform_symmetric_quantize(tensor, num_bits=8):
+
+
+def quantize_model_switch(model, method="None", num_bits=8):
     """
-    Quantize a tensor using uniform symmetric quantization.
+    Quantizes the given model based on the specified method.
+
+    Args:
+        model (torch.nn.Module): The model to be quantized.
+        method (str): The quantization method. One of {"None", "INT8", "INT16", "F2P", "Morris"}.
+        num_bits (int): The number of bits for quantization.
+
+    Returns:
+        torch.nn.Module: The quantized model.
+    """
+    quantization_methods = {
+        "None": lambda m: m,  # Return the original model
+        "INT8": lambda m: quantize_all_layers_uniform(m, num_bits=8),
+        "INT16": lambda m: quantize_all_layers_uniform(m, num_bits=16),
+        "F2P": lambda m: quantize_model_F2P(m),
+        "Morris": lambda m: quantize_model_morris(m),
+    }
+
+    # Apply the selected quantization method
+    quantized_model = quantization_methods.get(method, lambda m: m)(model)
+    print(f"Model quantized with {method}")
+    return quantized_model
+
+
+# Dummy quantization functions for F2P and Morris (implement these as needed)
+def quantize_model_F2P(model):
+    print("Applying F2P quantization...")
+    # Custom F2P quantization logic here
+    return model
+
+
+def quantize_model_morris(model):
+    print("Applying Morris quantization...")
+    # Custom Morris quantization logic here
+    return model
+
+
+# Testing the quantized models
+def test_model_precision(model, image_path, device="cpu"):
+    """
+    Tests the precision of a given model on a single image.
+
+    Args:
+        model (torch.nn.Module): The model to be tested.
+        image_path (str): Path to the image file.
+
+    Returns:
+        tuple: Predicted label, class index, and probability.
+    """
+    label, class_index, probabilities = predict_image(model, image_path, device)
+    if label:
+        predicted_label = label
+        predicted_prob = probabilities[class_index].item() * 100
+        print(f"Prediction: {predicted_label} (Class Index: {class_index}, Probability: {predicted_prob:.2f}%)")
+    else:
+        print("Prediction failed.")
+    return predicted_label, predicted_prob
+
+
+# Compare precision across quantization methods
+def compare_quantization_methods(image_path, device="cpu"):
+    model = resnet18(weights=ResNet18_Weights.DEFAULT)  # Load the original model
+
+    quantization_methods = ["None", "INT8", "INT16", "F2P", "Morris"]
+    results = {}
+
+    for method in quantization_methods:
+        quantized_model = quantize_model_switch(model, method=method)
+        label, prob = test_model_precision(quantized_model, image_path, device)
+        results[method] = (label, prob)
+
+    print("\nComparison of Quantization Methods:")
+    for method, result in results.items():
+        print(f"Method: {method}, Label: {result[0]}, Probability: {result[1]:.2f}%")
+
+
+
+
+def uniform_symmetric_quantize_with_checks(tensor: torch.Tensor, num_bits: int = 8) -> torch.Tensor:
+    """
+    מבצע קוונטיזציה אחידה סימטרית לטנסור, כולל בדיקות איכות.
 
     Args:
         tensor (torch.Tensor): הטנסור שברצונך לקוונטז.
         num_bits (int): מספר הביטים לקוונטיזציה.
 
     Returns:
-        torch.Tensor: הטנסור המקוונטז.
+        torch.Tensor: הטנסור המקוונטז או הטנסור המקורי במקרה של בעיה.
     """
-    # חישוב הטווח
-    max_val = tensor.abs().max()
-    scale = max_val / (2 ** (num_bits - 1) - 1)
-
-    # קוונטיזציה
-    quantized = torch.clamp((tensor / scale).round(), -2 ** (num_bits - 1) + 1, 2 ** (num_bits - 1) - 1)
-
-    # דה-קוונטיזציה
-    dequantized = quantized * scale
-
-    return dequantized
-
-
-def quantize_on_layer_uniform(tensor, num_bits=8) -> torch.Tensor:
-    """
-    מבצע קוונטיזציה אחידה סימטרית עבור שכבה נתונה.
-
-    Args:
-        tensor (torch.Tensor): הטנסור שברצונך לקוונטז.
-        num_bits (int): מספר הביטים לקוונטיזציה.
-
-    Returns:
-        torch.Tensor: הטנסור המקוונטז.
-    """
-    if tensor is None or torch.isnan(tensor).any():
-        print("Warning: Input tensor contains NaN values or is None")
+    # בדיקת קלט: אם הטנסור ריק, מכיל NaN או None
+    if tensor is None or not torch.is_tensor(tensor):
+        print("Error: Input is None or not a valid tensor.")
         return tensor
 
-    quantized_tensor = uniform_symmetric_quantize(tensor, num_bits=num_bits)
+    if torch.isnan(tensor).any():
+        print("Warning: Input tensor contains NaN values.")
+        return tensor
 
-    # בדיקת NaNs
-    if torch.isnan(quantized_tensor).any():
-        print("Error: NaN values detected in quantized tensor")
-        return tensor  # מחזירים את הטנסור המקורי במקרה של תקלה
+    try:
+        # שלב 1: חישוב הטווח והסקלה
+        max_val = tensor.abs().max()
+        scale = max_val / (2 ** (num_bits - 1) - 1)
 
-    return quantized_tensor
+        # שלב 2: קוונטיזציה וקלמפינג לטווח הביטים
+        quantized = torch.clamp((tensor / scale).round(), -2 ** (num_bits - 1) + 1, 2 ** (num_bits - 1) - 1)
+
+        # שלב 3: דה-קוונטיזציה (שחזור הערכים המקוריים)
+        dequantized = quantized * scale
+
+        # שלב 4: בדיקת פלט
+        if torch.isnan(dequantized).any():
+            print("Error: NaN values detected in quantized tensor.")
+            return tensor
+
+        return dequantized  # return the tensor after quantization
+
+    except Exception as e:
+        print(f"Error during quantization: {e}")
+        return tensor  # return the tensor before quantization if there is an error
 
 
-def quantize_all_layers_uniform(model, num_bits=8):
+def quantize_all_layers_uniform(model, num_bits=8) -> torch.nn.Module:
     """
     מבצע קוונטיזציה אחידה סימטרית על כל השכבות במודל.
 
@@ -85,19 +159,19 @@ def quantize_all_layers_uniform(model, num_bits=8):
                 layer.weight.data = layer.weight.data.float()
 
             # קוונטיזציה של המשקולות
-            quantized_weights = quantize_on_layer_uniform(layer.weight.data, num_bits=num_bits)
+            quantized_weights = uniform_symmetric_quantize_with_checks(layer.weight.data, num_bits=num_bits)
             layer.weight.data = quantized_weights
             print(f'{name}: {layer.weight.data.flatten()[:5]}')
 
             # קוונטיזציה של ה-bias אם קיים
             if layer.bias is not None:
-                if layer.bias.dtype == torch.float64:
+                if layer.bias.dtype == torch.float64:  # if the bias is in float64 then convert it to float32
                     layer.bias.data = layer.bias.data.float()
-                quantized_bias = quantize_on_layer_uniform(layer.bias.data, num_bits=num_bits)
+                quantized_bias = uniform_symmetric_quantize_with_checks(layer.bias.data, num_bits=num_bits)
                 layer.bias.data = quantized_bias
                 print(f'{name}.bias: {layer.bias.data.flatten()[:5]}')
 
-    return model
+    return model  # return the model after quantization
 
 
 def print_weight_dtypes(model):
@@ -153,7 +227,7 @@ def predict_image(model, image_path, device='cpu'):
     class_index = torch.argmax(probabilities).item()
 
     # טעינת שמות הקטגוריות מתוך קובץ JSON
-    with open(r"C:\Users\97253\OneDrive\שולחן העבודה\final project\imagenet_class_index.json") as labels_file:
+    with open(r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\imagenet_class_index.json") as labels_file:
         labels = json.load(labels_file)
 
     label = labels[str(class_index)]
@@ -246,7 +320,7 @@ def quantize_on_layer(tensor, use_sign=True) -> torch.Tensor:
 
 def quantize_all_layers(model):
     """
-    מבצע קוונטיזציה רק על השכבה הראשונה במודל
+    מבצע קוונטיזציה על כל השכבות במודל
     """
     for i, (name, layer) in enumerate(model.named_modules()):
         if isinstance(layer, (torch.nn.Conv2d, torch.nn.Linear)):
@@ -265,12 +339,66 @@ def quantize_all_layers(model):
     return model
 
 
-verbose = -5  # -1, 0, 2, 3, 4, 5
+def uniform_asymmetric_quantize(tensor, num_bits=8):
+    """
+    Quantize a tensor using uniform asymmetric quantization.
+
+    Args:
+        tensor (torch.Tensor): הטנסור שברצונך לקוונטז.
+        num_bits (int): מספר הביטים לקוונטיזציה.
+
+    Returns:
+        torch.Tensor: הטנסור המקוונטז.
+    """
+    # חישוב הטווח המינימלי והמקסימלי
+    min_val, max_val = tensor.min(), tensor.max()
+    scale = (max_val - min_val) / (2 ** num_bits - 1)
+    zero_point = (-min_val / scale).round()
+
+    # קוונטיזציה
+    quantized = torch.clamp(((tensor / scale).round() + zero_point), 0, 2 ** num_bits - 1)
+
+    # דה-קוונטיזציה
+    dequantized = (quantized - zero_point) * scale
+
+    return dequantized
+
+
+# verbose = -5  # -1, 0, 2, 3, 4, 5
+#             {'print5weights',
+#            'printFirstLayer5weights',
+#            'printFirstLayer5weightsUniform',
+#            'printAllLayersWeights',
+#            'printAllLayersWeightsUniform',
+#            '5ImagesTestQuantization',
+#            'checkNanValuesWeights'}
+VERBOSE = ''
+
+image_path_dog = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\dog.jpg"  # שם התמונה שלך
+image_path_cat = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\cat.jpeg"  # שם התמונה שלך
+image_path_kite = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\kite.jpg"  # שם התמונה שלך
+image_path_lion = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\lion.jpeg"  # שם התמונה שלך
+image_path_paper = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\paper.jpg"  # שם התמונה שלך
+array_of_path = [image_path_dog, image_path_cat, image_path_kite, image_path_lion, image_path_paper]
+
+# ביצוע ניבוי על כל התמונות
+for image_path in array_of_path:
+    # מבצע את הניבוי על התמונה
+    compare_quantization_methods(image_path)
+
+# # Example usage
+# image_path = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\dog.jpg"  # Specify your image path
+# compare_quantization_methods(image_path)
+
 
 # טוענים את המודל ומבצעים קוונטיזציה
 model = resnet18(weights=ResNet18_Weights.DEFAULT)
+model = quantize_all_layers(model)
+# quanitizied with INT8, INT16, F2P, Morris.
+# model = quantize_model(model)
 
-if verbose == -1:
+
+if VERBOSE == 'print5weights':
     print("Original model")
     print_all_5weights(model)
     print("Quantized model")
@@ -278,15 +406,15 @@ if verbose == -1:
     print_all_5weights(model)
     error(1)
 
-if verbose == 2:  # print the first 5 weights of the first layer
+if VERBOSE == 'printFirstLayer5weights':  # print the first 5 weights of the first layer
     vec2quantize = model.conv1.weight.data.flatten()[:5]  # $$$
     print(f'b4 {vec2quantize}')  # $$$
     # quantized_vec = quantize_on_layer(vec2quantize)  # $$$
-    quantized_vec = quantize_on_layer_uniform(vec2quantize, 8)
+    quantized_vec = uniform_symmetric_quantize_with_checks(vec2quantize, 8)
     print(f'after {quantized_vec}')  # $$$
     error(1)
 
-if verbose == 2:  # print the all weights of the first layer
+if VERBOSE == 'printFirstLayer5weightsUniform':  # print the all weights of the first layer
     vec2quantize = model.conv1.weight.data  # $$$
     print(f'b4 {vec2quantize}')  # $$$
     quantized_vec = quantize_on_layer(vec2quantize)  # $$$
@@ -294,7 +422,7 @@ if verbose == 2:  # print the all weights of the first layer
     print(f'after {quantized_vec}')  # $$$
     error(1)
 
-if verbose == 4:  # print the all types of the  layers
+if VERBOSE == 'printAllLayersWeights':  # print the all types of the  layers
     print("original types model")
     print_weight_dtypes(model)  # 32
     print("new types model")
@@ -302,29 +430,30 @@ if verbose == 4:  # print the all types of the  layers
     print_weight_dtypes(model)  # 32
     error(1)
 
-if verbose != -5:
-    model = quantize_all_layers(model)
-
-if verbose == -5:
+if VERBOSE == 'printAllLayersWeightsUniform':
     model = quantize_all_layers_uniform(model)
 
-if verbose == 5:
+if VERBOSE == 'checkNanValuesWeights':
     print("new types model")
     verify_quantization(model)  # check if there are NaN values in the weights
     error(2)
 
-if verbose == -5:  # test the quantization on 5 images
-    # הגדרת נתיב לתמונה שאתה רוצה לנבא עליה
-    image_path_dog = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\dog.jpg"  # שם התמונה שלך
-    image_path_cat = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\cat.jpeg"  # שם התמונה שלך
-    image_path_kite = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\kite.jpg"  # שם התמונה שלך
-    image_path_lion = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\lion.jpeg"  # שם התמונה שלך
-    image_path_paper = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\paper.jpg"  # שם התמונה שלך
-    array_of_path = [image_path_dog, image_path_cat, image_path_kite, image_path_lion, image_path_paper]
-
+if VERBOSE == '5ImagesTestQuantization':  # test the quantization on 5 images
     # הגדרת המכשיר (GPU אם זמין, אחרת CPU)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+        print("GPU is available")
+    else:
+        print("GPU is not available, using CPU")
+        device = "cpu"
     model = model.to(device)
+    # הגדרת נתיב לתמונה שאתה רוצה לנבא עליה
+    image_path_dog = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\dog.jpg"  # שם התמונה שלך
+    image_path_cat = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\cat.jpeg"  # שם התמונה שלך
+    image_path_kite = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\kite.jpg"  # שם התמונה שלך
+    image_path_lion = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\lion.jpeg"  # שם התמונה שלך
+    image_path_paper = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\paper.jpg"  # שם התמונה שלך
+    array_of_path = [image_path_dog, image_path_cat, image_path_kite, image_path_lion, image_path_paper]
 
     # ביצוע ניבוי על כל התמונות
     for image_path in array_of_path:
