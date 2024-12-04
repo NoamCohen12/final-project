@@ -6,7 +6,9 @@ from PIL import Image
 import torch
 import torchvision.transforms as transforms
 from torchvision.models import resnet18, ResNet18_Weights
+
 from settings import *
+import Quantizer
 
 # הוספת נתיב לקובץ Quantizer
 sys.path.append(r'/Sketches-main/src')
@@ -15,9 +17,107 @@ sys.path.append(r'/Sketches-main/src')
 ASSETS_PATH = r"/"
 
 
+def getImageList(folderPath) -> list:
+    imageList = []
+    for filename in os.listdir(folderPath):
+        # if it is a folder - open it and loop over the images
+        subfolderPath = os.path.join(folderPath, filename)
+        if os.path.isdir(subfolderPath):
+            for image_path in os.listdir(subfolderPath):
+                imageList.append(os.path.join(subfolderPath, image_path))
+    return imageList
 
 
-def quantize_model_switch(model, method="None", num_bits=8):
+def check_precision(prediction_list, prediction_list_quant) -> float:
+    """
+    check the precision of the quantization
+    """
+    # חישוב דיוק הניבוי
+    correct = 0
+    for label in prediction_list_quant:
+        if label in prediction_list:
+            correct += 1
+    precision = correct / len(prediction_list_quant)
+    return precision
+
+def check_recall(prediction_list, prediction_list_quant) -> float:
+    """
+    Calculate the recall of the quantized predictions.
+
+    Args:
+        prediction_list (list): The ground truth labels (original model predictions).
+        prediction_list_quant (list): The predicted labels from the quantized model.
+
+    Returns:
+        float: The recall value.
+    """
+    # Count true positives (labels in the ground truth that were correctly predicted)
+    true_positives = sum(1 for label in prediction_list if label in prediction_list_quant)
+
+    # Calculate recall
+    recall = true_positives / len(prediction_list) if prediction_list else 0.0
+    return recall
+
+def get_precision_of_all_quotations(list_of_images, device="cpu") -> None:
+    """
+    Predict the labels of a list of images using ResNet18 and compare
+    the precision of various quantization methods.
+
+    Args:
+        list_of_images (list): List of image file paths.
+        device (str): Device to use ("cpu" or "cuda").
+
+    Returns:
+        None
+    """
+    if not list_of_images:
+        raise ValueError("The list of images is empty.")
+
+    # Load the original ResNet18 model
+    model = resnet18(weights=ResNet18_Weights.DEFAULT)
+    model = model.to(device)
+    model.eval()  # Set model to evaluation mode
+
+    # Generate predictions with the original model
+    prediction_list = []
+    for image_path in list_of_images:
+        label, class_index, probabilities = predict_image(model, image_path, device)
+        if label:
+            prediction_list.append(label)
+    # print(prediction_list)
+    # error(1)
+
+    # Iterate over quantization methods and evaluate precision
+    for method in ["INT8", "INT16", "F2P", "uniform_symmetric", "Morris"]:
+        # Quantize the model
+        quantized_model = quantize_model_switch(model, method=method)
+        quantized_model = quantized_model.to(device)
+        quantized_model.eval()  # Set quantized model to evaluation mode
+
+        # Generate predictions with the quantized model
+        prediction_list_quant = []
+        for image_path in list_of_images:
+            label, class_index, probabilities = predict_image(quantized_model, image_path, device)
+            if label:
+                prediction_list_quant.append(label)
+
+        # Compare predictions and calculate precision
+        precision = check_precision(prediction_list, prediction_list_quant)
+        recall = check_recall(prediction_list, prediction_list_quant)
+        print(f"Precision of {method}: {precision:.3f}")
+        print(f"Recall of {method}: {recall:.3f}")
+
+
+# create a generator taht loop over all the images in the folder
+def imageGenerator(folderPath):
+    for filename in os.listdir(folderPath):
+        # if it is a folder - open it and loop over the images
+        if os.path.isdir(folderPath + filename):
+            for image_path in os.listdir(folderPath + filename):
+                yield image_path
+
+
+def quantize_model_switch(model, method="None"):
     """
     Quantizes the given model based on the specified method.
 
@@ -31,10 +131,11 @@ def quantize_model_switch(model, method="None", num_bits=8):
     """
     quantization_methods = {
         "None": lambda m: m,  # Return the original model
-        "INT8": lambda m: quantize_all_layers_uniform(m, num_bits=8),
-        "INT16": lambda m: quantize_all_layers_uniform(m, num_bits=16),
+        "INT8": lambda m: quantize_all_layers(m, quantization_type="symmetric", cntr_size=8),
+        "INT16": lambda m: quantize_all_layers(m, quantization_type="symmetric", cntr_size=16),
+        "uniform_symmetric": lambda m: quantize_all_layers(m, quantization_type="symmetric", cntr_size=8),
         "F2P": lambda m: quantize_model_F2P(m),
-        "Morris": lambda m: quantize_model_morris(m),
+        "Morris": lambda m: quantize_all_layers(m, quantization_type="morris", cntr_size=8),
     }
 
     # Apply the selected quantization method
@@ -43,61 +144,32 @@ def quantize_model_switch(model, method="None", num_bits=8):
     return quantized_model
 
 
-# Dummy quantization functions for F2P and Morris (implement these as needed)
-def quantize_model_F2P(model):
-    print("Applying F2P quantization...")
-    # Custom F2P quantization logic here
-    return model
-
-
-def quantize_model_morris(model):
-    print("Applying Morris quantization...")
-    # Custom Morris quantization logic here
-    return model
-
-
-# Testing the quantized models
-def test_model_precision(model, image_path, device="cpu"):
+def uniform_asymmetric_quantize(tensor, num_bits=8) -> torch.Tensor:
     """
-    Tests the precision of a given model on a single image.
+    Quantize a tensor using uniform asymmetric quantization.
 
     Args:
-        model (torch.nn.Module): The model to be tested.
-        image_path (str): Path to the image file.
+        tensor (torch.Tensor): הטנסור שברצונך לקוונטז.
+        num_bits (int): מספר הביטים לקוונטיזציה.
 
     Returns:
-        tuple: Predicted label, class index, and probability.
+        torch.Tensor: הטנסור המקוונטז.
     """
-    label, class_index, probabilities = predict_image(model, image_path, device)
-    if label:
-        predicted_label = label
-        predicted_prob = probabilities[class_index].item() * 100
-        print(f"Prediction: {predicted_label} (Class Index: {class_index}, Probability: {predicted_prob:.2f}%)")
-    else:
-        print("Prediction failed.")
-    return predicted_label, predicted_prob
+    # חישוב הטווח המינימלי והמקסימלי
+    min_val, max_val = tensor.min(), tensor.max()
+    scale = (max_val - min_val) / (2 ** num_bits - 1)
+    zero_point = (-min_val / scale).round()
+
+    # קוונטיזציה
+    quantized = torch.clamp(((tensor / scale).round() + zero_point), 0, 2 ** num_bits - 1)
+
+    # דה-קוונטיזציה
+    dequantized = (quantized - zero_point) * scale
+
+    return dequantized
 
 
-# Compare precision across quantization methods
-def compare_quantization_methods(image_path, device="cpu"):
-    model = resnet18(weights=ResNet18_Weights.DEFAULT)  # Load the original model
-
-    quantization_methods = ["None", "INT8", "INT16", "F2P", "Morris"]
-    results = {}
-
-    for method in quantization_methods:
-        quantized_model = quantize_model_switch(model, method=method)
-        label, prob = test_model_precision(quantized_model, image_path, device)
-        results[method] = (label, prob)
-
-    print("\nComparison of Quantization Methods:")
-    for method, result in results.items():
-        print(f"Method: {method}, Label: {result[0]}, Probability: {result[1]:.2f}%")
-
-
-
-
-def uniform_symmetric_quantize_with_checks(tensor: torch.Tensor, num_bits: int = 8) -> torch.Tensor:
+def uniform_symmetric_quantize(tensor: torch.Tensor, num_bits: int = 8) -> torch.Tensor:
     """
     מבצע קוונטיזציה אחידה סימטרית לטנסור, כולל בדיקות איכות.
 
@@ -140,41 +212,81 @@ def uniform_symmetric_quantize_with_checks(tensor: torch.Tensor, num_bits: int =
         return tensor  # return the tensor before quantization if there is an error
 
 
-def quantize_all_layers_uniform(model, num_bits=8) -> torch.nn.Module:
+# Dummy quantization functions for F2P and Morris (implement these as needed)
+def quantize_model_F2P(model, cntr_size=8) -> torch.nn.Module:  # same resent18 model stil $$$
+    print("Applying F2P quantization...")
+    # Custom F2P quantization logic here
+    return model
+
+
+def quantize_model_morris(tensor, num_bits=8) -> torch.Tensor:
     """
-    מבצע קוונטיזציה אחידה סימטרית על כל השכבות במודל.
+    Quantize a tensor using Morris quantization.
 
     Args:
-        model (torch.nn.Module): המודל שברצונך לקוונטז.
-        num_bits (int): מספר הביטים לקוונטיזציה.
+        tensor (torch.Tensor): The tensor to quantize.
+        num_bits (int): The number of bits for quantization.
 
     Returns:
-        torch.nn.Module: המודל המקוונטז.
+        torch.Tensor: The quantized tensor.
     """
-    for name, layer in model.named_modules():
-        if isinstance(layer, (torch.nn.Conv2d, torch.nn.Linear)):
-            print(f"Quantizing weights for layer: {name}")
+    # Number of quantization levels
+    levels = 2 ** num_bits
 
-            if layer.weight.dtype == torch.float64:
-                layer.weight.data = layer.weight.data.float()
+    # Calculate percentiles (buckets)
+    percentiles = torch.linspace(0, 100, levels + 1)
+    buckets = torch.quantile(tensor.flatten(), percentiles / 100.0)
 
-            # קוונטיזציה של המשקולות
-            quantized_weights = uniform_symmetric_quantize_with_checks(layer.weight.data, num_bits=num_bits)
-            layer.weight.data = quantized_weights
-            print(f'{name}: {layer.weight.data.flatten()[:5]}')
+    # Assign each value to the nearest bucket
+    quantized = torch.bucketize(tensor, buckets, right=True) - 1
+    quantized = torch.clamp(quantized, 0, levels - 1)
 
-            # קוונטיזציה של ה-bias אם קיים
-            if layer.bias is not None:
-                if layer.bias.dtype == torch.float64:  # if the bias is in float64 then convert it to float32
-                    layer.bias.data = layer.bias.data.float()
-                quantized_bias = uniform_symmetric_quantize_with_checks(layer.bias.data, num_bits=num_bits)
-                layer.bias.data = quantized_bias
-                print(f'{name}.bias: {layer.bias.data.flatten()[:5]}')
+    # Map quantized values back to original range
+    dequantized = buckets[quantized]
 
-    return model  # return the model after quantization
+    return dequantized
 
 
-def print_weight_dtypes(model):
+# Testing the quantized models
+def test_model_precision(model, image_path, device="cpu"):
+    """
+    Tests the precision of a given model on a single image.
+
+    Args:
+        model (torch.nn.Module): The model to be tested.
+        image_path (str): Path to the image file.
+
+    Returns:
+        tuple: Predicted label, class index, and probability.
+    """
+    label, class_index, probabilities = predict_image(model, image_path, device)
+    if label:
+        predicted_label = label
+        predicted_prob = probabilities[class_index].item() * 100
+        print(f"Prediction: {predicted_label} (Class Index: {class_index}, Probability: {predicted_prob:.2f}%)")
+    else:
+        print("Prediction failed.")
+    return predicted_label, predicted_prob
+
+
+# Compare precision across quantization methods
+def compare_quantization_methods(image_path, device="cpu"):
+    model = resnet18(weights=ResNet18_Weights.DEFAULT)  # Load the original model
+
+    quantization_methods = ["None", "INT8", "INT16", "F2P", "Morris"]
+    results = {}
+
+    for method in quantization_methods:
+        quantized_model = quantize_model_switch(model, method=method)
+        label, prob = test_model_precision(quantized_model, image_path, device)
+        results[method] = (label, prob)
+
+    print("\nComparison of Quantization Methods:")
+    for method, result in results.items():
+        print(f"Method: {method}, Label: {result[0]}, Probability: {result[1]:.2f}%")
+
+
+def print_weight_dtypes(model) -> None:
     """
     מדפיס את השמות ואת סוגי הנתונים של משקולות (weights) בלבד במודל.
     """
@@ -184,15 +296,15 @@ def print_weight_dtypes(model):
             print(f"{name}: {param.dtype}")
 
 
-def verify_quantization(model):
+def verify_quantization(model) -> None:  # Checks that the weights are not NaN.
     for name, param in model.named_parameters():
         if torch.isnan(param).any():
             print(f"NaN found in {name}")
         else:
-            print(f"No NaN in {name}")
+            print(f"No NaN in {name}")  #
 
 
-def predict_image(model, image_path, device='cpu'):
+def predict_image(model, image_path, device='cpu') -> tuple:
     """
     פונקציה שמבצעת ניבוי עבור תמונה על בסיס מודל נתון
     """
@@ -227,7 +339,7 @@ def predict_image(model, image_path, device='cpu'):
     class_index = torch.argmax(probabilities).item()
 
     # טעינת שמות הקטגוריות מתוך קובץ JSON
-    with open(r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\imagenet_class_index.json") as labels_file:
+    with open(r"C:\Users\97253\OneDrive\שולחן העבודה\final project\imagenet_class_index.json") as labels_file:
         labels = json.load(labels_file)
 
     label = labels[str(class_index)]
@@ -235,30 +347,7 @@ def predict_image(model, image_path, device='cpu'):
     return label, class_index, probabilities
 
 
-def print_weights_after_quantization(model):
-    """
-    Print the weights of layer 0 after quantization in a flat array format.
-    """
-    layer_0_weights = model.layer1[0].conv1.weight.data.numpy()
-    flattened_weights = layer_0_weights.flatten()
-    print("Values after quantization for layer 0:\n", np.sort(flattened_weights))
-
-
-# def quantize_model(model, use_sign=True):
-#     """
-#     Apply custom quantization to all weights in the model.
-#     """
-#     # יצירת גריד
-#     cntr_size = 8
-#     if use_sign:
-#         grid = np.array([item for item in range(2 ** cntr_size)])
-#     else:
-#         grid = np.array([item for item in range(-2 ** (cntr_size - 1) + 1, 2 ** (cntr_size - 1))])
-#
-#     # קוונטיזציה למשקלים
-#
-#     return model
-def print_all_5weights(model):
+def print_all_5weights(model) -> None:  # Prints the first 5 weights of each layer in the model.
     """
       מבצע קוונטיזציה על כל השכבות במודל
       """
@@ -273,7 +362,7 @@ def print_all_5weights(model):
             print(f'{name}: {layer.weight.data.flatten()[:5]}')
 
 
-def quantize_on_layer(tensor, use_sign=True) -> torch.Tensor:
+def quantize_on_layer(tensor, use_sign=True) -> torch.Tensor:  # of itamar
     """
     מבצע קוונטיזציה מותאמת אישית עבור שכבה נתונה
     """
@@ -318,199 +407,149 @@ def quantize_on_layer(tensor, use_sign=True) -> torch.Tensor:
     return quantized_tensor
 
 
-def quantize_all_layers(model):
+def quantize_all_layers(model, quantization_type: str = "itamar", cntr_size=8) -> torch.nn.Module:
     """
     מבצע קוונטיזציה על כל השכבות במודל
     """
     for i, (name, layer) in enumerate(model.named_modules()):
         if isinstance(layer, (torch.nn.Conv2d, torch.nn.Linear)):
-            print(f"Quantizing weights for the first layer: {name}")
+            # print(f"Quantizing weights for the first layer: {name}")
 
             if layer.weight.dtype == torch.float64:
                 layer.weight.data = layer.weight.data.float()
-
-            layer.weight.data = quantize_on_layer(layer.weight.data)
+            match quantization_type:
+                case "itamar":
+                    layer.weight.data = quantize_on_layer(layer.weight.data)
+                case "symmetric":
+                    layer.weight.data = uniform_symmetric_quantize(layer.weight.data, cntr_size)
+                case "asymmetric":
+                    layer.weight.data = uniform_asymmetric_quantize(layer.weight.data, cntr_size)
+                case "morris":
+                    layer.weight.data = quantize_model_morris(layer.weight.data, cntr_size)
+                case "F2P":
+                    layer.weight.data = quantize_model_F2P(layer.weight.data, cntr_size)
+                case _:
+                    print("Error: Invalid quantization type")
 
             if layer.bias is not None:
                 if layer.bias.dtype == torch.float64:
                     layer.bias.data = layer.bias.data.float()
-                layer.bias.data = quantize_on_layer(layer.bias.data)
+                    match quantization_type:
+                        case "itamar":
+                            layer.bias.data = quantize_on_layer(layer.bias.data)
+                        case "symmetric":
+                            layer.bias.data = uniform_symmetric_quantize(layer.bias.data)
+                        case "asymmetric":
+                            layer.bias.data = uniform_asymmetric_quantize(layer.bias.data)
+                        case "morris":
+                            layer.bias.data = quantize_model_morris(layer.bias.data)
+                        case "F2P":
+                            layer.bias.data = quantize_model_F2P(layer.bias.data)
+                        case _:
+                            print("Error: Invalid quantization type")
 
     return model
 
 
-def uniform_asymmetric_quantize(tensor, num_bits=8):
-    """
-    Quantize a tensor using uniform asymmetric quantization.
-
-    Args:
-        tensor (torch.Tensor): הטנסור שברצונך לקוונטז.
-        num_bits (int): מספר הביטים לקוונטיזציה.
-
-    Returns:
-        torch.Tensor: הטנסור המקוונטז.
-    """
-    # חישוב הטווח המינימלי והמקסימלי
-    min_val, max_val = tensor.min(), tensor.max()
-    scale = (max_val - min_val) / (2 ** num_bits - 1)
-    zero_point = (-min_val / scale).round()
-
-    # קוונטיזציה
-    quantized = torch.clamp(((tensor / scale).round() + zero_point), 0, 2 ** num_bits - 1)
-
-    # דה-קוונטיזציה
-    dequantized = (quantized - zero_point) * scale
-
-    return dequantized
-
-
-# verbose = -5  # -1, 0, 2, 3, 4, 5
-#             {'print5weights',
-#            'printFirstLayer5weights',
-#            'printFirstLayer5weightsUniform',
-#            'printAllLayersWeights',
-#            'printAllLayersWeightsUniform',
-#            '5ImagesTestQuantization',
-#            'checkNanValuesWeights'}
-VERBOSE = ''
-
-image_path_dog = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\dog.jpg"  # שם התמונה שלך
-image_path_cat = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\cat.jpeg"  # שם התמונה שלך
-image_path_kite = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\kite.jpg"  # שם התמונה שלך
-image_path_lion = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\lion.jpeg"  # שם התמונה שלך
-image_path_paper = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\paper.jpg"  # שם התמונה שלך
-array_of_path = [image_path_dog, image_path_cat, image_path_kite, image_path_lion, image_path_paper]
-
-# ביצוע ניבוי על כל התמונות
-for image_path in array_of_path:
-    # מבצע את הניבוי על התמונה
-    compare_quantization_methods(image_path)
-
-# # Example usage
-# image_path = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\dog.jpg"  # Specify your image path
-# compare_quantization_methods(image_path)
-
-
-# טוענים את המודל ומבצעים קוונטיזציה
-model = resnet18(weights=ResNet18_Weights.DEFAULT)
-model = quantize_all_layers(model)
-# quanitizied with INT8, INT16, F2P, Morris.
-# model = quantize_model(model)
-
-
-if VERBOSE == 'print5weights':
-    print("Original model")
-    print_all_5weights(model)
-    print("Quantized model")
-    model = quantize_all_layers(model)
-    print_all_5weights(model)
+def main():
+    # check if the path is correct
+    images_path = r"..\..\100 animals"  # 100 animals
+    if os.path.exists(images_path):
+        print("Path exists")
+    lst = getImageList(images_path)  # test the imageGenerator function
+    get_precision_of_all_quotations(lst)
     error(1)
 
-if VERBOSE == 'printFirstLayer5weights':  # print the first 5 weights of the first layer
-    vec2quantize = model.conv1.weight.data.flatten()[:5]  # $$$
-    print(f'b4 {vec2quantize}')  # $$$
-    # quantized_vec = quantize_on_layer(vec2quantize)  # $$$
-    quantized_vec = uniform_symmetric_quantize_with_checks(vec2quantize, 8)
-    print(f'after {quantized_vec}')  # $$$
-    error(1)
+    # 'print5weights',
+    #    'printFirstLayer5weights',
+    #    'printFirstLayerWeightsUniform',
+    #    'printAllLayersTypes',
+    #    'printAllLayersWeightsUniform',
+    #    '5ImagesTestQuantization',
+    #    'checkNanValuesWeights'
 
-if VERBOSE == 'printFirstLayer5weightsUniform':  # print the all weights of the first layer
-    vec2quantize = model.conv1.weight.data  # $$$
-    print(f'b4 {vec2quantize}')  # $$$
-    quantized_vec = quantize_on_layer(vec2quantize)  # $$$
-    # quantized_vec = quantize_on_layer_uniform(vec2quantize, 8)
-    print(f'after {quantized_vec}')  # $$$
-    error(1)
+    VERBOSE = ["5ImagesTestQuantization"]
 
-if VERBOSE == 'printAllLayersWeights':  # print the all types of the  layers
-    print("original types model")
-    print_weight_dtypes(model)  # 32
-    print("new types model")
-    model = quantize_all_layers(model)
-    print_weight_dtypes(model)  # 32
-    error(1)
-
-if VERBOSE == 'printAllLayersWeightsUniform':
-    model = quantize_all_layers_uniform(model)
-
-if VERBOSE == 'checkNanValuesWeights':
-    print("new types model")
-    verify_quantization(model)  # check if there are NaN values in the weights
-    error(2)
-
-if VERBOSE == '5ImagesTestQuantization':  # test the quantization on 5 images
-    # הגדרת המכשיר (GPU אם זמין, אחרת CPU)
-    if torch.cuda.is_available():
-        device = "cuda"
-        print("GPU is available")
-    else:
-        print("GPU is not available, using CPU")
-        device = "cpu"
-    model = model.to(device)
-    # הגדרת נתיב לתמונה שאתה רוצה לנבא עליה
-    image_path_dog = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\dog.jpg"  # שם התמונה שלך
-    image_path_cat = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\cat.jpeg"  # שם התמונה שלך
-    image_path_kite = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\kite.jpg"  # שם התמונה שלך
-    image_path_lion = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\lion.jpeg"  # שם התמונה שלך
-    image_path_paper = r"C:\Users\Bar Yechezkel\PycharmProjects\CS_final_project\paper.jpg"  # שם התמונה שלך
+    image_path_dog = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\dog.jpg"  # שם התמונה שלך
+    image_path_cat = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\cat.jpeg"  # שם התמונה שלך
+    image_path_kite = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\kite.jpg"  # שם התמונה שלך
+    image_path_lion = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\lion.jpeg"  # שם התמונה שלך
+    image_path_paper = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\paper.jpg"  # שם התמונה שלך
     array_of_path = [image_path_dog, image_path_cat, image_path_kite, image_path_lion, image_path_paper]
 
-    # ביצוע ניבוי על כל התמונות
-    for image_path in array_of_path:
-        # מבצע את הניבוי על התמונה
-        label, class_index, probabilities = predict_image(model, image_path, device)
+    # # ביצוע ניבוי על כל התמונות
+    # for image_path in array_of_path:
+    #     # מבצע את הניבוי על התמונה
+    #     compare_quantization_methods(image_path)
 
-        if label:
-            predicted_label = label
-            predicted_prob = probabilities[class_index].item() * 100
-            print(f"Prediction: {predicted_label} (Class Index: {class_index}, Probability: {predicted_prob:.2f}%)")
+    # טוענים את המודל ומבצעים קוונטיזציה
+    model = resnet18(weights=ResNet18_Weights.DEFAULT)
+    model = quantize_all_layers(model, "morris", 8)
+    # quanitizied with INT8, INT16, F2P, Morris.
+    # model = quantize_model(model)
 
-# # קריאה לפונקציה לביצוע כימות
-# quantize_on_layer(model, use_sign=True, tensor=flattened_weights)
+    if 'print5weights' in VERBOSE:
+        print("Original model")
+        print_all_5weights(model)
+        print("Quantized model")
+        model = quantize_all_layers(model)
+        print_all_5weights(model)
+        error(1)
 
-# model = quantize_model(model)
+    if 'printFirstLayer5weights' in VERBOSE:  # print the first 5 weights of the first layer
+        vec2quantize = model.conv1.weight.data.flatten()[:5]  # $$$
+        print(f'b4 {vec2quantize}')  # $$$
+        quantized_vec = quantize_on_layer(vec2quantize, 8)
+        print(f'after {quantized_vec}')  # $$$
+        error(1)
+
+    if 'printFirstLayerWeightsUniform' in VERBOSE:  # print the all weights of the first layer
+        vec2quantize = model.conv1.weight.data  # $$$
+        print(f'b4 {vec2quantize}')  # $$$
+        quantized_vec = uniform_symmetric_quantize(vec2quantize)  # $$$
+        print(f'after {quantized_vec}')  # $$$
+        error(1)
+
+    if 'printAllLayersTypes' in VERBOSE:  # print the all types of the  layers
+        print("original types model")
+        print_weight_dtypes(model)  # 32
+        print("new types model")
+        model = quantize_all_layers(model)
+        print_weight_dtypes(model)  # 32
+        error(1)
+
+    if 'checkNanValuesWeights' in VERBOSE:  # check if there are NaN values in the weights
+        print("new types model")
+        verify_quantization(model)  # check if there are NaN values in the weights
+        error(2)
+
+    if '5ImagesTestQuantization' in VERBOSE:  # test the quantization on 5 images
+        # הגדרת המכשיר (GPU אם זמין, אחרת CPU)
+        if torch.cuda.is_available():
+            device = "cuda"
+            print("GPU is available")
+        else:
+            print("GPU is not available, using CPU")
+            device = "cpu"
+        model = model.to(device)
+        # הגדרת נתיב לתמונה שאתה רוצה לנבא עליה
+        image_path_dog = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\dog.jpg"  # שם התמונה שלך
+        image_path_cat = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\cat.jpeg"  # שם התמונה שלך
+        image_path_kite = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\kite.jpg"  # שם התמונה שלך
+        image_path_lion = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\lion.jpeg"  # שם התמונה שלך
+        image_path_paper = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\paper.jpg"  # שם התמונה שלך
+        array_of_path = [image_path_dog, image_path_cat, image_path_kite, image_path_lion, image_path_paper]
+
+        # ביצוע ניבוי על כל התמונות
+        for image_path in array_of_path:
+            # מבצע את הניבוי על התמונה
+            label, class_index, probabilities = predict_image(model, image_path, device)
+
+            if label:
+                predicted_label = label
+                predicted_prob = probabilities[class_index].item() * 100
+                print(f"Prediction: {predicted_label} (Class Index: {class_index}, Probability: {predicted_prob:.2f}%)")
 
 
-# print_weights_after_quantization(model)
-
-
-# TODOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
-# # ניבוי על התמונה עם המודל המקוונטז
-# image_path = os.path.join(ASSETS_PATH, "dog.jpg")
-# class_index, probabilities = predict_image(model, image_path)
-#
-# # הדפסת תחזית עם אחוזים
-# predicted_label = labels[str(class_index)][1]
-# predicted_prob = probabilities[class_index].item() * 100
-# print(f"Prediction: {predicted_label} ({predicted_prob:.2f}%)")
-
-# def quantizeModel(model, useSign=True):
-#     """
-#     Quantize the model using my quantization function
-#     """
-#     # קבלת וקטור המשקלים של שכבת הקונבולוציה הראשונה
-#     conv1_weights = model.layer1[0].conv1.weight.data.numpy()  # גישה למשקלים של קונבולוציה הראשונה
-#     flattened_weights = conv1_weights.flatten()  # שטח את המטריצה לווקטור חד-ממדי
-#     print("Values before quantization:\n", np.sort(flattened_weights))  # הדפס לפני כימות
-#
-#     # יצירת גריד לקוונטיזציה
-#     cntrSize = 8
-#     if useSign:
-#         grid = np.array([item for item in range(2 ** cntrSize)])
-#     else:
-#         grid = np.array([item for item in range(-2 ** (cntrSize - 1) + 1, 2 ** (cntrSize - 1))])
-#
-#     # תהליך הכימות
-#     quantized_weights, scale, extra_value = Quantizer.quantize(flattened_weights, grid)
-#     print("Values after quantization:\n", np.sort(quantized_weights))  # הדפס אחרי כימות
-#
-#     # תהליך דה-כימות
-#     dequantized_weights = Quantizer.dequantize(quantized_weights, scale, z=1)
-#     print("Values after dequantization:\n", np.sort(dequantized_weights))  # הדפס אחרי דה-כימות
-#
-#     # החלת המשקלים המקוונטזים על המודל
-#     model.layer1[0].conv1.weight.data = torch.tensor(quantized_weights, dtype=torch.float32).reshape(
-#         conv1_weights.shape)
-#
-#     return model
-#
+if __name__ == '__main__':
+    main()
