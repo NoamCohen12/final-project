@@ -598,6 +598,7 @@ def main():
     log_terminal_output()
     error(1)
 
+
     # 'print5weights',
     #    'printFirstLayer5weights',
     #    'printFirstLayerWeightsUniform',
