@@ -1,0 +1,2 @@
+This is an example output!
+An error occurred: This is an example error!
