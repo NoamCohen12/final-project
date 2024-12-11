@@ -4,7 +4,7 @@ import os, math, itertools, numpy as np, scipy.stats as st
 from printf import printf, printarFp
 np.set_printoptions(precision=1)
 
-SEED    = 123456789012345678901234567890123456789
+SEED    = 42
 INF_INT = 999999999
 MAX_NUM_OF_FLOWS = 2**32
 
@@ -494,4 +494,3 @@ def writeVecStatToFile (
     if minVec<0:
         warning ('in settings.writeVecStatToFile(). The minimal value in vector {} is {:.2f}' .format
                  (str, minVec))
-    

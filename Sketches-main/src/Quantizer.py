@@ -1,29 +1,15 @@
-import matplotlib
-import numpy as np
-import os
-import pickle
-import scipy
-import seaborn as sns
-import time
-
+import os, time, scipy, matplotlib, pickle, numpy as np, seaborn as sns
 # from datetime import datetime
 import matplotlib.pyplot as plt
 import pandas as pd
 from fitter import Fitter, get_common_distributions, get_distributions
 
-import F2P_li
-import F2P_lr
-import F2P_sr
-import FP
-import ResFileParser
-import SEAD_dyn
-import SEAD_stat
-import settings
-from ResFileParser import *
-from SingleCntrSimulator import *
-from printf import printf, printar, printarFp
-from settings import *
+import settings, ResFileParser, F2P_sr, F2P_lr, F2P_li, FP, SEAD_stat, SEAD_dyn  
 from tictoc import tic, toc
+from printf import printf, printar, printarFp
+from SingleCntrSimulator import *
+from ResFileParser import *
+from settings import *
 
 MAX_DF = 20
 
@@ -87,7 +73,10 @@ def setPltParams (size : str = 'large') -> None:
     })
 
 
-def clamp (vec: np.array, lowerBnd: float, upperBnd: float) -> np.array:
+def clamp (
+        vec      : np.array, 
+        lowerBnd : float, 
+        upperBnd : float) -> np.array:
     """
     Clamp a the input vector vec, as follows.
     For each item in vec:
@@ -131,10 +120,10 @@ def calcErr (
         return resRecord
 
     if weightDist!='norm':
-        settings.error (f'In FPQuantization.calcErr(). Sorry, the distribution {dist} you chose is not supported.')
+        error (f'In FPQuantization.calcErr(). Sorry, the distribution {dist} you chose is not supported.')
     pdfVec = [scipy.stats.norm(0, stdev).pdf(orgVec[i]) for i in range(len(orgVec))]
     weightedAbsMseVec      = np.dot (pdfVec, absSqErrVec) 
-    weightedRelMseVec      = np.empty(len([item for item in orgVec if item!=0]))
+    weightedRelMseVec      = np.empty((len(orgVec[orgVec!=0])))
     idxInweightedRelMseVec = 0
     for i in range(len(orgVec)):
         if orgVec[i]==0:
@@ -142,7 +131,7 @@ def calcErr (
         weightedRelMseVec[idxInweightedRelMseVec] = scipy.stats.norm(0, stdev).pdf(orgVec[i])*((orgVec[i]-changedVec[i])/orgVec[i])**2 
         idxInweightedRelMseVec += 1
 
-    if settings.VERBOSE_LOG in verbose:
+    if VERBOSE_LOG in verbose:
         printf (logFile, f'// mode={mode}\n')
         for i in range (10):
              printf (logFile, f'i={i}, org={orgVec[i]}, changed={changedVec[i]}, PDF={scipy.stats.norm(0, stdev).pdf(orgVec[i])}, weightedAbsMse={weightedAbsMseVec[i]}\n')
@@ -177,12 +166,12 @@ def quantize (vec  : np.array, # The vector to quantize
     upperBnd    = vec[-1] # The upper bound is the largest absolute value in the vector to quantize.
     lowerBnd    = vec[0] # The lower bound is the largest absolute value in the vector to quantize.
     scaledVec   = clamp (vec, lowerBnd, upperBnd)
-    if (any([vec[i]!=scaledVec[i] for i in range(len(vec))])):
-        settings.error ('in Quantizer.quantize(). vec!=clamped vec.')
+    if np.any(vec!=scaledVec):
+        error ('in Quantizer.quantize(). vec!=clamped vec.')
     grid        = np.sort (grid)
     scale       = (vec[-1]-vec[0]) / (max(grid)-min(grid))
     z           = -vec[0]/scale
-    scaledVec   = [item/scale + z for item in vec] # The vector after scaling and clamping (still w/o rounding)  
+    scaledVec   = vec/scale + z # The vector after scaling and clamping (still w/o rounding)  
     quantVec    = np.empty (len(vec)) # The quantized vector (after rounding scaledVec) 
     idxInGrid = int(0)
     for idxInVec in range(len(scaledVec)):
@@ -216,14 +205,14 @@ def genVec2Quantize (dist       : str   = 'uniform',  # distribution from which 
     if dist=='uniform':
         vec = [(lowerBnd + i*(upperBnd-lowerBnd)/(numPts-1)) for i in range(numPts)] #$$$ change to np-style to boost perf'
     elif dist=='norm':
-        rng = np.random.default_rng(settings.SEED)
+        rng = np.random.default_rng(SEED)
         vec = np.sort (rng.standard_normal(numPts) * stdev)
     elif dist.startswith('t_'):
-        vec = np.sort (np.random.standard_t(df=settings.getDf(dist), size=numPts) * stdev)
+        vec = np.sort (np.random.standard_t(df=getDf(dist), size=numPts) * stdev)
     elif dist=='int': # vector of integers in the range
         vec = np.arange (lowerBnd, upperBnd+1) 
     else:
-        settings.error (f'In Quantization.genVec2Quantize(). Sorry. The distribution {dist} you chose is not supported.')
+        error (f'In Quantization.genVec2Quantize(). Sorry. The distribution {dist} you chose is not supported.')
     if outLier==None:
         return np.array (vec)
     return np.array ([-outLier] + vec + [outLier])
@@ -243,15 +232,17 @@ def calcQuantRoundErr (modes          : list  = [], # modes to be simulated, e.g
     """
     Simulate the required configurations, and calculate the rounding quantization errors. Output the results (the quantization rounding errors) as defined by the verbose.
     """
-    np.random.seed (settings.SEED)
-    if settings.VERBOSE_DEBUG in verbose:
+    np.random.seed (SEED)
+    if VERBOSE_DEBUG in verbose:
         numPts = 64
+    else:
+        numPts = min (numPts, vec2quantize.shape[0])
     if VERBOSE_RES in verbose:
         resFile = open (f'../res/{genRndErrFileName(cntrSize)}.res', 'a+')
         printf (resFile, f'// dist={dist}, stdev={stdev}, numPts={numPts}\n')
         if dist!='norm' and (not(dist.startswith('t_'))): 
             printf (resFile, f'// vecLowerBnd={vecLowerBnd}, vecUpperBnd={vecUpperBnd}, outLier={outLier}\n')
-    if settings.VERBOSE_LOG in verbose:
+    if VERBOSE_LOG in verbose:
         logFile = open (f'../res/quant_n{cntrSize}.log', 'w')
     else:        
         logFile = None
@@ -273,12 +264,12 @@ def calcQuantRoundErr (modes          : list  = [], # modes to be simulated, e.g
     weightDist = None
     resRecords = []
     for mode in modes:
-        if settings.VERBOSE_DEBUG in verbose:
+        if VERBOSE_DEBUG in verbose:
             debugFile = open ('../res/debug.txt', 'a+')
             printf (debugFile, f'// mode={mode}\n')
         if mode.startswith('FP'):
             expSize = int(mode.split ('_e')[1])
-            grid                     = grid(cntrSize=cntrSize, expSize=expSize, verbose=[], signed=signed)
+            grid                     = getAllValsFP(cntrSize=cntrSize, expSize=expSize, verbose=[], signed=signed)
             [quantizedVec, scale, z] = quantize(vec=vec2quantize, grid=grid)
             dequantizedVec           = dequantize(vec=quantizedVec, scale=scale, z=z)
             
@@ -293,13 +284,9 @@ def calcQuantRoundErr (modes          : list  = [], # modes to be simulated, e.g
                     )
                 
         elif (mode.startswith('F2P') or mode.startswith('F3P')):
-            numSettings = getFxpSettings (mode)
-            flavor    = numSettings['flavor']
             grid = getAllValsFxp (
-                nSystem     = numSettings['nSystem'],
-                flavor      = numSettings['flavor'], 
+                fxpSettingStr = mode,
                 cntrSize    = cntrSize, 
-                hyperSize   = numSettings['hyperSize'], 
                 verbose     = [], 
                 signed      = signed
             )
@@ -317,9 +304,9 @@ def calcQuantRoundErr (modes          : list  = [], # modes to be simulated, e.g
             
         elif mode.startswith('int'):
             if signed: 
-                grid = np.array ([item for item in range (-2**(cntrSize-1)+1, 2**(cntrSize-1))])
+                grid = np.array (range(-2**(cntrSize-1)+1, 2**(cntrSize-1), 1))
             else:
-                grid = np.array ([item for item in range (0, 2**cntrSize-1)])
+                grid = np.array (range(2**cntrSize))
             [quantizedVec, scale, z] = quantize(vec=vec2quantize, grid=grid)
             dequantizedVec           = dequantize(vec=quantizedVec, scale=scale, z=z)
             resRecord = calcErr(
@@ -378,14 +365,14 @@ def calcQuantRoundErr (modes          : list  = [], # modes to be simulated, e.g
 
         resRecord['mode']  = mode
         
-        if settings.VERBOSE_DEBUG in verbose:
+        if VERBOSE_DEBUG in verbose:
             debugFile = open ('../res/debug.txt', 'a+')
             for i in range(len(vec2quantize)):
                 printf (debugFile, f'i={i}, vec[i]={vec2quantize[i]}, quantizedVec[i]={quantizedVec[i]}, dequantizedVec={dequantizedVec[i]}\n')
             printf (debugFile, '\n')
             exit ()
 
-        if settings.VERBOSE_COUT_CNTRLINE in verbose:
+        if VERBOSE_COUT_CNTRLINE in verbose:
             print (resRecord)
         
         if VERBOSE_RES in verbose:
@@ -399,7 +386,7 @@ def calcQuantRoundErr (modes          : list  = [], # modes to be simulated, e.g
         resRecord['stdev']  = stdev
         if VERBOSE_PCL in verbose:
             pickle.dump(resRecord, pclOutputFile)        
-        if settings.VERBOSE_PLOT in verbose:
+        if VERBOSE_PLOT in verbose:
             resRecords.append (resRecord)
 
 def plotGrids (
@@ -469,8 +456,8 @@ def plotGrids (
     for i in range(len(resRecords)): 
         resRecord = resRecords[i]     
         curLine, = ax.plot (
-            resRecord['grid'], 
-            [i for item in range(lenGrid)], # len(resRecords)-i # Write the y index in reverse order, so that the legends' order will correspond the order of the plots. 
+            resRecord['grid'],
+            np.array(range(lenGrid)), # Write the y index in reverse order, so that the legends' order will correspond the order of the plots. 
             color      = colorOfMode [resRecord['mode']], 
             linestyle  = 'None', 
             marker     = 'o',
@@ -528,7 +515,7 @@ if __name__ == '__main__':
                              vecLowerBnd    = -stdev, 
                              vecUpperBnd    = stdev,
                              # outLier        = 100*stdev,
-                             verbose = verbose) #[VERBOSE_RES, settings.VERBOSE_PLOT])  
+                             verbose = verbose) #[VERBOSE_RES, VERBOSE_PLOT])  
 
     except KeyboardInterrupt:
         print('Keyboard interrupt.')
