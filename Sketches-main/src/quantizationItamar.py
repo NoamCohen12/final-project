@@ -6,7 +6,9 @@ from PIL import Image
 import torch
 import torchvision.transforms as transforms
 from torchvision.models import resnet18, ResNet18_Weights
-
+import os
+import sys
+from datetime import datetime
 from settings import *
 import Quantizer
 
@@ -15,6 +17,47 @@ sys.path.append(r'/Sketches-main/src')
 
 # נתיב לקבצים הדרושים
 ASSETS_PATH = r"/"
+
+
+
+
+def random_tensor(tensor) -> torch.Tensor:
+    """
+    מבצע רנדומיזציה מלאה לטנזור נתון, כולל שלב דמוי 'dequantize'
+    """
+    if tensor is None or torch.isnan(tensor).any():
+        print("Warning: Input tensor contains NaN values or is None")
+        return tensor
+
+    # הפיכת הטנזור למערך נומרי
+    tensor_flat = tensor.cpu().numpy().flatten()
+
+    try:
+        # יצירת "קוונטיזציה" רנדומלית
+        random_quantized = np.random.uniform(low=tensor_flat.min(), high=tensor_flat.max(), size=tensor_flat.shape)
+
+        # "דה-קוונטיזציה" רנדומלית (מוסיפים סטייה רנדומלית לערכים הקיימים)
+        randomized_dequantized = random_quantized + np.random.normal(loc=0, scale=0.1, size=random_quantized.shape)
+
+        # חישוב סטיית שגיאה (רק לצורך הדגמה)
+        mse_error = np.mean((tensor_flat - randomized_dequantized) ** 2)
+        print(f"Randomization MSE error: {mse_error:.6f}")
+
+    except Exception as e:
+        print(f"Randomization error: {e}")
+        return tensor
+
+    # המרת הערכים האקראיים חזרה לטנזור של פייתון
+    randomized_tensor = torch.from_numpy(randomized_dequantized).view(tensor.shape).to(tensor.device,
+                                                                                       dtype=torch.float32)
+
+    # בדיקה אם נוצרו NaN
+    if torch.isnan(randomized_tensor).any():
+        print("Error: NaN values detected in randomized tensor")
+        return tensor  # מחזירים את הטנסור המקורי במקרה של תקלה
+
+    # החזרת הטנזור המקוונטז (הרנדומלי)
+    return randomized_tensor
 
 
 def getImageList(folderPath) -> list:
@@ -40,6 +83,7 @@ def check_precision(prediction_list, prediction_list_quant) -> float:
     precision = correct / len(prediction_list_quant)
     return precision
 
+
 def check_recall(prediction_list, prediction_list_quant) -> float:
     """
     Calculate the recall of the quantized predictions.
@@ -57,6 +101,7 @@ def check_recall(prediction_list, prediction_list_quant) -> float:
     # Calculate recall
     recall = true_positives / len(prediction_list) if prediction_list else 0.0
     return recall
+
 
 def get_precision_of_all_quotations(list_of_images, device="cpu") -> None:
     """
@@ -88,7 +133,7 @@ def get_precision_of_all_quotations(list_of_images, device="cpu") -> None:
     # error(1)
 
     # Iterate over quantization methods and evaluate precision
-    for method in ["INT8", "INT16", "F2P", "uniform_symmetric", "Morris"]:
+    for method in ["INT8", "INT16", "F2P", "uniform_symmetric", "Morris","random"]:
         # Quantize the model
         quantized_model = quantize_model_switch(model, method=method)
         quantized_model = quantized_model.to(device)
@@ -136,6 +181,7 @@ def quantize_model_switch(model, method="None"):
         "uniform_symmetric": lambda m: quantize_all_layers(m, quantization_type="symmetric", cntr_size=8),
         "F2P": lambda m: quantize_model_F2P(m),
         "Morris": lambda m: quantize_all_layers(m, quantization_type="morris", cntr_size=8),
+        "random": lambda m: quantize_all_layers(m, quantization_type="random", cntr_size=8),
     }
 
     # Apply the selected quantization method
@@ -167,6 +213,9 @@ def uniform_asymmetric_quantize(tensor, num_bits=8) -> torch.Tensor:
     dequantized = (quantized - zero_point) * scale
 
     return dequantized
+
+
+import torch
 
 
 def uniform_symmetric_quantize(tensor: torch.Tensor, num_bits: int = 8) -> torch.Tensor:
@@ -407,7 +456,74 @@ def quantize_on_layer(tensor, use_sign=True) -> torch.Tensor:  # of itamar
     return quantized_tensor
 
 
-def quantize_all_layers(model, quantization_type: str = "itamar", cntr_size=8) -> torch.nn.Module:
+def custom_quantize(tensor, num_bits=8, quantization_type="asymmetric", number_system="None",
+                    cntrSize=4) -> torch.Tensor:
+    """
+    num_bits קובע את מספר הרמות (כמה צעדים יש בטווח).
+cntrSize עשוי לקבוע את גודל כל צעד (כמה רחוקות רמות סמוכות זו מזו).
+
+    Quantize a tensor using uniform (a)symmetric quantization and optional number system constraints.
+
+    Args:
+        tensor (torch.Tensor): The tensor to quantize.
+        num_bits (int): Number of bits for quantization.
+        quantization_type (str): Type of quantization, either "asymmetric" or "symmetric".
+        number_system (str): Number system, one of {"None", "INT", "F2P", "Morris"}.
+        cntrSize (int): Constraint size; minimum value is 4.
+
+    Returns:
+        torch.Tensor: The quantized tensor.
+    """
+    if cntrSize < 4:
+        raise ValueError("cntrSize must be at least 4.")
+
+    # Compute quantization range
+    if quantization_type == "asymmetric":
+        min_val, max_val = tensor.min(), tensor.max()
+        scale = (max_val - min_val) / (2 ** num_bits - 1)
+        zero_point = (-min_val / scale).round()
+    elif quantization_type == "symmetric":
+        max_val = tensor.abs().max()
+        scale = (2 * max_val) / (2 ** num_bits - 1)
+        zero_point = 0
+    else:
+        raise ValueError("Unsupported quantization type. Use 'asymmetric' or 'symmetric'.")
+
+    # Apply quantization
+    quantized = torch.clamp(((tensor / scale).round() + zero_point), 0, 2 ** num_bits - 1)
+
+    # Handle number systems if needed
+    if number_system == "None":
+        pass  # No modification
+    elif number_system == "INT":
+        quantized = quantized.int()
+    elif number_system == "F2P":
+        # Simulate Fixed Point 2's Complement (scaled version of INT)
+        quantized = quantized.int()
+    elif number_system == "Morris":
+        # Placeholder: Implement Morris-specific quantization here
+        raise NotImplementedError("Morris quantization is not implemented yet.")
+    else:
+        raise ValueError("Unsupported number system. Use 'None', 'INT', 'F2P', or 'Morris'.")
+
+    # Dequantize back to floating-point representation
+    dequantized = (quantized - zero_point) * scale
+
+    return dequantized
+
+
+# Quantizes the given model based on the specified method.
+#
+# Args:
+# quantization type (str): (a)symmetric
+# number system: One of {"None", "INT", "F2P", "Morris"}.
+# cntrSize: at least 4.
+
+def quantize_all_layers(
+        model,
+        quantization_type: str = "random",
+        number_system: str = "INT",
+        cntr_size=4) -> torch.nn.Module:
     """
     מבצע קוונטיזציה על כל השכבות במודל
     """
@@ -418,6 +534,8 @@ def quantize_all_layers(model, quantization_type: str = "itamar", cntr_size=8) -
             if layer.weight.dtype == torch.float64:
                 layer.weight.data = layer.weight.data.float()
             match quantization_type:
+                case "random":
+                    layer.weight.data = random_tensor(layer.weight.data)
                 case "itamar":
                     layer.weight.data = quantize_on_layer(layer.weight.data)
                 case "symmetric":
@@ -426,15 +544,27 @@ def quantize_all_layers(model, quantization_type: str = "itamar", cntr_size=8) -
                     layer.weight.data = uniform_asymmetric_quantize(layer.weight.data, cntr_size)
                 case "morris":
                     layer.weight.data = quantize_model_morris(layer.weight.data, cntr_size)
+                case "INT8":
+                    # if signed:
+                    grid = np.array(range(-2 ** (cntr_size - 1) + 1, 2 ** (cntr_size - 1), 1))
+                    # else:
+                    # grid = np.array(range(2 ** cntrSize))
+                    layer.weight.data = Quantizer.quantize(layer.weight.data, grid=grid)
                 case "F2P":
                     layer.weight.data = quantize_model_F2P(layer.weight.data, cntr_size)
                 case _:
                     print("Error: Invalid quantization type")
+            # if quantization_type == "symmetric":
+            #
+            #
+            # if quantization_type == "asymmetric":
 
             if layer.bias is not None:
                 if layer.bias.dtype == torch.float64:
                     layer.bias.data = layer.bias.data.float()
                     match quantization_type:
+                        case "random":
+                            layer.bias.data = random_tensor(layer.bias.data)
                         case "itamar":
                             layer.bias.data = quantize_on_layer(layer.bias.data)
                         case "symmetric":
@@ -443,6 +573,12 @@ def quantize_all_layers(model, quantization_type: str = "itamar", cntr_size=8) -
                             layer.bias.data = uniform_asymmetric_quantize(layer.bias.data)
                         case "morris":
                             layer.bias.data = quantize_model_morris(layer.bias.data)
+                        case "INT8":
+                            # if signed:
+                            grid = np.array(range(-2 ** (cntr_size - 1) + 1, 2 ** (cntr_size - 1), 1))
+                            # else:
+                            # grid = np.array(range(2 ** cntrSize))
+                            layer.weight.data = Quantizer.quantize(layer.weight.data, grid=grid)
                         case "F2P":
                             layer.bias.data = quantize_model_F2P(layer.bias.data)
                         case _:
@@ -458,6 +594,8 @@ def main():
         print("Path exists")
     lst = getImageList(images_path)  # test the imageGenerator function
     get_precision_of_all_quotations(lst)
+    # קריאה לפונקציה
+    log_terminal_output()
     error(1)
 
     # 'print5weights',
@@ -468,7 +606,7 @@ def main():
     #    '5ImagesTestQuantization',
     #    'checkNanValuesWeights'
 
-    VERBOSE = ["5ImagesTestQuantization"]
+    VERBOSE = [""]
 
     image_path_dog = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\dog.jpg"  # שם התמונה שלך
     image_path_cat = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\cat.jpeg"  # שם התמונה שלך
@@ -484,7 +622,7 @@ def main():
 
     # טוענים את המודל ומבצעים קוונטיזציה
     model = resnet18(weights=ResNet18_Weights.DEFAULT)
-    model = quantize_all_layers(model, "morris", 8)
+    # model = quantize_all_layers(model, "random", 8)
     # quanitizied with INT8, INT16, F2P, Morris.
     # model = quantize_model(model)
 
@@ -492,14 +630,14 @@ def main():
         print("Original model")
         print_all_5weights(model)
         print("Quantized model")
-        model = quantize_all_layers(model)
+        model = quantize_all_layers(model, quantization_type="random", cntr_size=8)
         print_all_5weights(model)
         error(1)
 
     if 'printFirstLayer5weights' in VERBOSE:  # print the first 5 weights of the first layer
         vec2quantize = model.conv1.weight.data.flatten()[:5]  # $$$
         print(f'b4 {vec2quantize}')  # $$$
-        quantized_vec = quantize_on_layer(vec2quantize, 8)
+        quantized_vec = random_tensor(vec2quantize)
         print(f'after {quantized_vec}')  # $$$
         error(1)
 
@@ -550,6 +688,41 @@ def main():
                 predicted_prob = probabilities[class_index].item() * 100
                 print(f"Prediction: {predicted_label} (Class Index: {class_index}, Probability: {predicted_prob:.2f}%)")
 
+def log_terminal_output():
+    # יצירת התיקייה 'report' אם לא קיימת
+    os.makedirs("report", exist_ok=True)
+
+    # יצירת שם הקובץ עם תאריך ושעה נוכחיים
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = os.path.join("report", f"report_{timestamp}.txt")
+
+    # פתיחת הקובץ לכתיבה
+    with open(filename, "w") as log_file:
+        # כיוון ה-stdout וה-stderr אל הקובץ
+        sys.stdout = log_file
+        sys.stderr = log_file
+
+        try:
+            # הדפסות לדוגמה (תוכל להוסיף כאן את הקוד שברצונך להריץ)
+            print("This is an example output!")
+            raise Exception("This is an example error!")
+        except Exception as e:
+            print(f"An error occurred: {e}")
+        finally:
+            # שחזור stdout ו-stderr לברירת המחדל
+            sys.stdout = sys.__stdout__
+            sys.stderr = sys.__stderr__
+            print(f"Log has been saved to {filename}")
+
+
+
 
 if __name__ == '__main__':
     main()
+
+
+
+
+# F2P flavors: sr, lr, si, li
+# h
+# Example: F2P_lr_h2, F2P_sr_h2, 
