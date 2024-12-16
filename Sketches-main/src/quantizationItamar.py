@@ -523,6 +523,7 @@ def quantize_all_layers(
         model,
         quantization_type: str = "random",
         number_system: str = "INT",
+        signed: bool = True,
         cntr_size=4) -> torch.nn.Module:
     """
     מבצע קוונטיזציה על כל השכבות במודל
@@ -545,10 +546,10 @@ def quantize_all_layers(
                 case "morris":
                     layer.weight.data = quantize_model_morris(layer.weight.data, cntr_size)
                 case "INT8":
-                    # if signed:
-                    grid = np.array(range(-2 ** (cntr_size - 1) + 1, 2 ** (cntr_size - 1), 1))
-                    # else:
-                    # grid = np.array(range(2 ** cntrSize))
+                    if signed:
+                        grid = np.array(range(-2 ** (cntr_size - 1) + 1, 2 ** (cntr_size - 1), 1))
+                    else:
+                        grid = np.array(range(2 ** cntr_size))
                     layer.weight.data = Quantizer.quantize(layer.weight.data, grid=grid)
                 case "F2P":
                     layer.weight.data = quantize_model_F2P(layer.weight.data, cntr_size)
@@ -574,11 +575,12 @@ def quantize_all_layers(
                         case "morris":
                             layer.bias.data = quantize_model_morris(layer.bias.data)
                         case "INT8":
-                            # if signed:
-                            grid = np.array(range(-2 ** (cntr_size - 1) + 1, 2 ** (cntr_size - 1), 1))
-                            # else:
-                            # grid = np.array(range(2 ** cntrSize))
-                            layer.weight.data = Quantizer.quantize(layer.weight.data, grid=grid)
+                             if signed:
+                                grid = np.array(range(-2 ** (cntr_size - 1) + 1, 2 ** (cntr_size - 1), 1))
+                             else:
+                                grid = np.array(range(2 ** cntr_size))
+
+                                layer.weight.data = Quantizer.quantize(layer.weight.data, grid=grid)
                         case "F2P":
                             layer.bias.data = quantize_model_F2P(layer.bias.data)
                         case _:
