@@ -19,8 +19,6 @@ sys.path.append(r'/Sketches-main/src')
 ASSETS_PATH = r"/"
 
 
-
-
 def random_tensor(tensor) -> torch.Tensor:
     """
     מבצע רנדומיזציה מלאה לטנזור נתון, כולל שלב דמוי 'dequantize'
@@ -133,7 +131,7 @@ def get_precision_of_all_quotations(list_of_images, device="cpu") -> None:
     # error(1)
 
     # Iterate over quantization methods and evaluate precision
-    for method in ["INT8", "INT16", "F2P", "uniform_symmetric", "Morris","random"]:
+    for method in ["INT8", "INT16", "F2P"]:
         # Quantize the model
         quantized_model = quantize_model_switch(model, method=method)
         quantized_model = quantized_model.to(device)
@@ -176,12 +174,10 @@ def quantize_model_switch(model, method="None"):
     """
     quantization_methods = {
         "None": lambda m: m,  # Return the original model
-        "INT8": lambda m: quantize_all_layers(m, quantization_type="symmetric", cntr_size=8),
-        "INT16": lambda m: quantize_all_layers(m, quantization_type="symmetric", cntr_size=16),
-        "uniform_symmetric": lambda m: quantize_all_layers(m, quantization_type="symmetric", cntr_size=8),
-        "F2P": lambda m: quantize_model_F2P(m),
-        "Morris": lambda m: quantize_all_layers(m, quantization_type="morris", cntr_size=8),
-        "random": lambda m: quantize_all_layers(m, quantization_type="random", cntr_size=8),
+        "INT8": lambda m: quantize_all_layers(m, quantization_type="INT8", cntrSize=8),
+        "INT16": lambda m: quantize_all_layers(m, quantization_type="INT16", cntrSize=16),
+        "F2P": lambda m: quantize_all_layers(m,quantization_type="F2P",cntrSize=8),
+
     }
 
     # Apply the selected quantization method
@@ -456,60 +452,7 @@ def quantize_on_layer(tensor, use_sign=True) -> torch.Tensor:  # of itamar
     return quantized_tensor
 
 
-def custom_quantize(tensor, num_bits=8, quantization_type="asymmetric", number_system="None",
-                    cntrSize=4) -> torch.Tensor:
-    """
-    num_bits קובע את מספר הרמות (כמה צעדים יש בטווח).
-cntrSize עשוי לקבוע את גודל כל צעד (כמה רחוקות רמות סמוכות זו מזו).
 
-    Quantize a tensor using uniform (a)symmetric quantization and optional number system constraints.
-
-    Args:
-        tensor (torch.Tensor): The tensor to quantize.
-        num_bits (int): Number of bits for quantization.
-        quantization_type (str): Type of quantization, either "asymmetric" or "symmetric".
-        number_system (str): Number system, one of {"None", "INT", "F2P", "Morris"}.
-        cntrSize (int): Constraint size; minimum value is 4.
-
-    Returns:
-        torch.Tensor: The quantized tensor.
-    """
-    if cntrSize < 4:
-        raise ValueError("cntrSize must be at least 4.")
-
-    # Compute quantization range
-    if quantization_type == "asymmetric":
-        min_val, max_val = tensor.min(), tensor.max()
-        scale = (max_val - min_val) / (2 ** num_bits - 1)
-        zero_point = (-min_val / scale).round()
-    elif quantization_type == "symmetric":
-        max_val = tensor.abs().max()
-        scale = (2 * max_val) / (2 ** num_bits - 1)
-        zero_point = 0
-    else:
-        raise ValueError("Unsupported quantization type. Use 'asymmetric' or 'symmetric'.")
-
-    # Apply quantization
-    quantized = torch.clamp(((tensor / scale).round() + zero_point), 0, 2 ** num_bits - 1)
-
-    # Handle number systems if needed
-    if number_system == "None":
-        pass  # No modification
-    elif number_system == "INT":
-        quantized = quantized.int()
-    elif number_system == "F2P":
-        # Simulate Fixed Point 2's Complement (scaled version of INT)
-        quantized = quantized.int()
-    elif number_system == "Morris":
-        # Placeholder: Implement Morris-specific quantization here
-        raise NotImplementedError("Morris quantization is not implemented yet.")
-    else:
-        raise ValueError("Unsupported number system. Use 'None', 'INT', 'F2P', or 'Morris'.")
-
-    # Dequantize back to floating-point representation
-    dequantized = (quantized - zero_point) * scale
-
-    return dequantized
 
 
 # Quantizes the given model based on the specified method.
@@ -524,67 +467,89 @@ def quantize_all_layers(
         quantization_type: str = "random",
         number_system: str = "INT",
         signed: bool = True,
-        cntr_size=4) -> torch.nn.Module:
+        cntrSize=4) -> torch.nn.Module:
     """
-    מבצע קוונטיזציה על כל השכבות במודל
+    Perform quantization on all layers of the model.
     """
     for i, (name, layer) in enumerate(model.named_modules()):
         if isinstance(layer, (torch.nn.Conv2d, torch.nn.Linear)):
-            # print(f"Quantizing weights for the first layer: {name}")
-
+            # Ensure weights are of type float32
             if layer.weight.dtype == torch.float64:
                 layer.weight.data = layer.weight.data.float()
+
+            # Quantization logic for weights
             match quantization_type:
                 case "random":
                     layer.weight.data = random_tensor(layer.weight.data)
-                case "itamar":
-                    layer.weight.data = quantize_on_layer(layer.weight.data)
-                case "symmetric":
-                    layer.weight.data = uniform_symmetric_quantize(layer.weight.data, cntr_size)
-                case "asymmetric":
-                    layer.weight.data = uniform_asymmetric_quantize(layer.weight.data, cntr_size)
-                case "morris":
-                    layer.weight.data = quantize_model_morris(layer.weight.data, cntr_size)
-                case "INT8":
-                    if signed:
-                        grid = np.array(range(-2 ** (cntr_size - 1) + 1, 2 ** (cntr_size - 1), 1))
-                    else:
-                        grid = np.array(range(2 ** cntr_size))
-                    layer.weight.data = Quantizer.quantize(layer.weight.data, grid=grid)
-                case "F2P":
-                    layer.weight.data = quantize_model_F2P(layer.weight.data, cntr_size)
-                case _:
-                    print("Error: Invalid quantization type")
-            # if quantization_type == "symmetric":
-            #
-            #
-            # if quantization_type == "asymmetric":
+                case "INT8" | "INT16":
+                    # Define the grid for quantization based on INT8 or INT16
+                    grid = np.array(range(-2 ** (cntrSize - 1) + 1, 2 ** (cntrSize - 1), 1)) if signed else np.array(
+                        range(2 ** cntrSize))
 
+                    # Flatten the weight tensor for quantization
+                    flat_weight = layer.weight.data.view(-1).numpy()
+                    quantized_weight, scale, z = Quantizer.quantize(flat_weight, grid=grid)
+                    # Dequantize the weight
+                    quantized_weight = Quantizer.dequantize(quantized_weight, scale, z=z)
+                    # Reshape back to the original shape
+                    layer.weight.data = torch.from_numpy(quantized_weight).view(layer.weight.data.shape).to(
+                        layer.weight.data.device)
+
+                case "F2P":
+
+                    grid = Quantizer.getAllValsFxp(
+                        fxpSettingStr= 'F2P_lr_h2',
+                        cntrSize=cntrSize,
+                        verbose=[],
+                        signed=signed
+                    )
+                    # Flatten and quantize the weights
+                    flat_weight = layer.weight.data.view(-1).numpy()
+                    quantized_weight, scale, z = Quantizer.quantize(flat_weight, grid=grid)
+                    quantized_weight = Quantizer.dequantize(quantized_weight, scale, z=z)
+                    layer.weight.data = torch.from_numpy(quantized_weight).view(layer.weight.data.shape).to(
+                        layer.weight.data.device)
+                case _:
+                    print(f"Error: Invalid quantization type '{quantization_type}' for weights")
+
+            # Quantization logic for biases
             if layer.bias is not None:
                 if layer.bias.dtype == torch.float64:
                     layer.bias.data = layer.bias.data.float()
-                    match quantization_type:
-                        case "random":
-                            layer.bias.data = random_tensor(layer.bias.data)
-                        case "itamar":
-                            layer.bias.data = quantize_on_layer(layer.bias.data)
-                        case "symmetric":
-                            layer.bias.data = uniform_symmetric_quantize(layer.bias.data)
-                        case "asymmetric":
-                            layer.bias.data = uniform_asymmetric_quantize(layer.bias.data)
-                        case "morris":
-                            layer.bias.data = quantize_model_morris(layer.bias.data)
-                        case "INT8":
-                             if signed:
-                                grid = np.array(range(-2 ** (cntr_size - 1) + 1, 2 ** (cntr_size - 1), 1))
-                             else:
-                                grid = np.array(range(2 ** cntr_size))
 
-                                layer.weight.data = Quantizer.quantize(layer.weight.data, grid=grid)
-                        case "F2P":
-                            layer.bias.data = quantize_model_F2P(layer.bias.data)
-                        case _:
-                            print("Error: Invalid quantization type")
+                match quantization_type:
+                    case "random":
+                        layer.bias.data = random_tensor(layer.bias.data)
+                    case "INT8" | "INT16":
+                        # Define the grid for quantization based on INT8 or INT16
+                        grid = np.array(
+                            range(-2 ** (cntrSize - 1) + 1, 2 ** (cntrSize - 1), 1)) if signed else np.array(
+                            range(2 ** cntrSize))
+
+                        # Flatten the bias tensor for quantization
+                        flat_bias = layer.bias.data.view(-1).numpy()
+                        quantized_bias, scale, z = Quantizer.quantize(flat_bias, grid=grid)
+                        # Dequantize the bias
+                        quantized_bias = Quantizer.dequantize(quantized_bias, scale, z=z)
+                        # Reshape back to the original shape
+                        layer.bias.data = torch.from_numpy(quantized_bias).view(layer.bias.data.shape).to(
+                            layer.bias.data.device)
+
+                    case "F2P":
+                        grid = Quantizer.getAllValsFxp(
+                            fxpSettingStr=f"F2P_lr_h2",
+                            cntrSize=cntrSize,
+                            verbose=[],
+                            signed=signed
+                        )
+                        # Flatten and quantize the bias
+                        flat_bias = layer.bias.data.view(-1).numpy()
+                        quantized_bias, scale, extra_value = Quantizer.quantize(flat_bias, grid=grid)
+                        quantized_bias = Quantizer.dequantize(quantized_bias, scale, z=extra_value)
+                        layer.bias.data = torch.from_numpy(quantized_bias).view(layer.bias.data.shape).to(
+                            layer.bias.data.device)
+                    case _:
+                        print(f"Error: Invalid quantization type '{quantization_type}' for bias")
 
     return model
 
@@ -599,7 +564,6 @@ def main():
     # קריאה לפונקציה
     log_terminal_output()
     error(1)
-
 
     # 'print5weights',
     #    'printFirstLayer5weights',
@@ -633,7 +597,7 @@ def main():
         print("Original model")
         print_all_5weights(model)
         print("Quantized model")
-        model = quantize_all_layers(model, quantization_type="random", cntr_size=8)
+        model = quantize_all_layers(model, quantization_type="random", cntrSize=8)
         print_all_5weights(model)
         error(1)
 
@@ -691,6 +655,7 @@ def main():
                 predicted_prob = probabilities[class_index].item() * 100
                 print(f"Prediction: {predicted_label} (Class Index: {class_index}, Probability: {predicted_prob:.2f}%)")
 
+
 def log_terminal_output():
     # יצירת התיקייה 'report' אם לא קיימת
     os.makedirs("report", exist_ok=True)
@@ -718,14 +683,9 @@ def log_terminal_output():
             print(f"Log has been saved to {filename}")
 
 
-
-
 if __name__ == '__main__':
     main()
 
-
-
-
 # F2P flavors: sr, lr, si, li
 # h
-# Example: F2P_lr_h2, F2P_sr_h2, 
+# Example: F2P_lr_h2, F2P_sr_h2,
