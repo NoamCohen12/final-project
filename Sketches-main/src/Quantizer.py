@@ -74,8 +74,8 @@ def setPltParams (size : str = 'large') -> None:
 
 
 def clamp (
-        vec      : np.array, 
-        lowerBnd : float, 
+        vec      : np.array,
+        lowerBnd : float,
         upperBnd : float) -> np.array:
     """
     Clamp a the input vector vec, as follows.
@@ -85,7 +85,11 @@ def clamp (
     """
     vec[vec < lowerBnd] = lowerBnd
     vec[vec > upperBnd] = upperBnd
-    return vec 
+    return vec
+
+
+
+
 
 def calcErr (
         orgVec         : np.array, # vector before quantization 
@@ -151,12 +155,12 @@ def scaleGrid (grid : np.array, lowerBnd=0, upperBnd=100) -> np.array:
     scale = (upperBnd-lowerBnd) / (grid[-1]-grid[0])
     return scale * grid  
     # return [item*scale for item in grid] 
-    
-def quantize (vec  : np.array, # The vector to quantize 
+
+def quantize (vec  : np.array, # The vector to quantize
               grid : np.array  # The quantization grid (all the values that can be represented by the destination number representation
-              ) -> [np.array, float]: # [the_quantized_vector, the scale_factor (by which the vector was divided)] 
+              ) -> [np.array, float]: # [the_quantized_vector, the scale_factor (by which the vector was divided)]
     """
-    Quantize an input vector, using symmetric Min-max quantization. 
+    Quantize an input vector, using symmetric Min-max quantization.
     This is done by:
     - Quantizing the vector, namely:
       - Clamping and scaling the vector. The scaling method is minMax.
@@ -171,11 +175,11 @@ def quantize (vec  : np.array, # The vector to quantize
     grid        = np.sort (grid)
     scale       = (vec[-1]-vec[0]) / (max(grid)-min(grid))
     z           = -vec[0]/scale
-    scaledVec   = vec/scale + z # The vector after scaling and clamping (still w/o rounding)  
-    quantVec    = np.empty (len(vec)) # The quantized vector (after rounding scaledVec) 
+    scaledVec   = vec/scale + z # The vector after scaling and clamping (still w/o rounding)
+    quantVec    = np.empty (len(vec)) # The quantized vector (after rounding scaledVec)
     idxInGrid = int(0)
     for idxInVec in range(len(scaledVec)):
-        if idxInGrid==len(grid): # already reached the max grid val --> all next items in q should be the last item in the grid 
+        if idxInGrid==len(grid): # already reached the max grid val --> all next items in q should be the last item in the grid
             quantVec[idxInVec] = grid[-1]
             continue
         quantVec[idxInVec]= grid[idxInGrid]
