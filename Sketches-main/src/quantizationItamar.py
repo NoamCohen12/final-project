@@ -11,9 +11,10 @@ import sys
 from datetime import datetime
 from settings import *
 import Quantizer
+from write_to_file_and_print_to_terminal import save_terminal_output_to_report
 
 # הוספת נתיב לקובץ Quantizer
-sys.path.append(r'/Sketches-main/src')
+sys.path.append(r"/Sketches-main/src")
 
 # נתיב לקבצים הדרושים
 ASSETS_PATH = r"/"
@@ -338,7 +339,7 @@ def predict_image(model, image_path, device='cpu') -> tuple:
     class_index = torch.argmax(probabilities).item()
 
     # טעינת שמות הקטגוריות מתוך קובץ JSON
-    with open(r"C:\Users\97253\OneDrive\שולחן העבודה\final project\imagenet_class_index.json") as labels_file:
+    with open("imagenet_class_index.json") as labels_file:
         labels = json.load(labels_file)
 
     label = labels[str(class_index)]
@@ -628,14 +629,21 @@ def quantize_all_layers(
 
 def test_5pic(model, device="cpu"):
     model = model.to(device)
-    # הגדרת נתיב לתמונה שאתה רוצה לנבא עליה
-    image_path_dog = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\dog.jpg"  # שם התמונה שלך
-    image_path_cat = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\cat.jpeg"  # שם התמונה שלך
-    image_path_kite = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\kite.jpg"  # שם התמונה שלך
-    image_path_lion = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\lion.jpeg"  # שם התמונה שלך
-    image_path_paper = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\paper.jpg"  # שם התמונה שלך
+    # Paths to images
+    image_path_dog = "dog.jpg"
+    image_path_cat = "cat.jpeg"
+    image_path_kite = "kite.jpg"
+    image_path_lion = "lion.jpeg"
+    image_path_paper = "paper.jpg"
     array_of_path = [image_path_dog, image_path_cat, image_path_kite, image_path_lion, image_path_paper]
 
+    # Check if the files exist
+    for path in array_of_path:
+        if not os.path.exists(path):
+            print(f"File not found: {path}")
+            return
+
+    print("All files found!")
     # ביצוע ניבוי על כל התמונות
     for image_path in array_of_path:
         # מבצע את הניבוי על התמונה
@@ -668,11 +676,11 @@ def main():
 
     VERBOSE = [""]
 
-    image_path_dog = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\dog.jpg"  # שם התמונה שלך
-    image_path_cat = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\cat.jpeg"  # שם התמונה שלך
-    image_path_kite = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\kite.jpg"  # שם התמונה שלך
-    image_path_lion = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\lion.jpeg"  # שם התמונה שלך
-    image_path_paper = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\paper.jpg"  # שם התמונה שלך
+    image_path_dog = r"dog.jpg"  # שם התמונה שלך
+    image_path_cat = r"cat.jpeg"  # שם התמונה שלך
+    image_path_kite = r"kite.jpg"  # שם התמונה שלך
+    image_path_lion = r"lion.jpeg"  # שם התמונה שלך
+    image_path_paper = r"paper.jpg"  # שם התמונה שלך
     array_of_path = [image_path_dog, image_path_cat, image_path_kite, image_path_lion, image_path_paper]
 
     # # ביצוע ניבוי על כל התמונות
@@ -719,7 +727,8 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    save_terminal_output_to_report(main)
+    # main()
 
 # F2P flavors: sr, lr, si, li
 # h
