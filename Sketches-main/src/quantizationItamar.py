@@ -165,7 +165,7 @@ def get_precision_of_all_quotations(list_of_images, device="cpu", test=True) -> 
             prediction_list.append(label)
 
     # Iterate over quantization methods and evaluate precision
-    for method in ["INT8", "INT16", "F2P"]:
+    for method in ["INT8", "INT16", "F2P","random"]:
         try:
             # Quantize the model
             quantized_model = quantize_model_switch(model, method=method)
@@ -223,6 +223,7 @@ def quantize_model_switch(model, method="None"):
         "INT8": lambda m: quantize_all_layers(m, quantization_type="INT8", cntrSize=8),
         "INT16": lambda m: quantize_all_layers(m, quantization_type="INT16", cntrSize=16),
         "F2P": lambda m: quantize_all_layers(m, quantization_type="F2P", cntrSize=8),
+        "random": lambda m: quantize_all_layers(m, quantization_type="random", cntrSize=8),
 
     }
 
@@ -674,7 +675,7 @@ def main():
     #    '5ImagesTestQuantization',
     #    'checkNanValuesWeights'
 
-    VERBOSE = [""]
+    VERBOSE = ["printFirstLayer5weights"]
 
     image_path_dog = r"dog.jpg"  # שם התמונה שלך
     image_path_cat = r"cat.jpeg"  # שם התמונה שלך
@@ -704,9 +705,12 @@ def main():
 
     if 'printFirstLayer5weights' in VERBOSE:  # print the first 5 weights of the first layer
         vec2quantize = model.conv1.weight.data.flatten()[:5]  # $$$
+        test_5pic(model)
         print(f'b4 {vec2quantize}')  # $$$
         quantized_vec = random_tensor(vec2quantize)
         print(f'after {quantized_vec}')  # $$$
+        model.conv1.weight.data = random_tensor(quantize_on_layer(model.conv1.weight.data))
+        test_5pic(model)
         error(1)
 
     if 'printAllLayersTypes' in VERBOSE:  # print the all types of the  layers
