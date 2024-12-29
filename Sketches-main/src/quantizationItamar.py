@@ -8,9 +8,10 @@ import sys
 from datetime import datetime
 from settings import *
 import Quantizer
+from write_to_file_and_print_to_terminal import save_terminal_output_to_report
 
 # הוספת נתיב לקובץ Quantizer
-sys.path.append(r'/Sketches-main/src')
+sys.path.append(r"/Sketches-main/src")
 
 # נתיב לקבצים הדרושים
 ASSETS_PATH = r"/"
@@ -165,7 +166,7 @@ def get_precision_of_all_quotations(list_of_images, device="cpu", test=False) ->
             prediction_list.append(label)
 
     # Iterate over quantization methods and evaluate precision
-    for method in ["INT8", "INT16", "F2P"]:
+    for method in ["INT8", "INT16", "F2P","random"]:
         try:
             # Quantize the model
             quantized_model = quantize_model_switch(model, method=method)
@@ -213,6 +214,7 @@ def quantize_model_switch(model, method="None"):
         "INT8": lambda m: quantize_all_layers(m, quantization_type="INT", cntrSize=8),
         "INT16": lambda m: quantize_all_layers(m, quantization_type="INT", cntrSize=16),
         "F2P": lambda m: quantize_all_layers(m, quantization_type="F2P", cntrSize=8),
+        "random": lambda m: quantize_all_layers(m, quantization_type="random", cntrSize=8),
 
     }
 
@@ -377,8 +379,16 @@ def test_5pic(model, device="cpu"):
     image_path_kite = r"5pics\kite.jpg"  # שם התמונה שלך
     image_path_lion = r"5pics\lion.jpeg"  # שם התמונה שלך
     image_path_paper = r"5pics\paper.jpg"  # שם התמונה שלך
+
     array_of_path = [image_path_dog, image_path_cat, image_path_kite, image_path_lion, image_path_paper]
 
+    # Check if the files exist
+    for path in array_of_path:
+        if not os.path.exists(path):
+            print(f"File not found: {path}")
+            return
+
+    print("All files found!")
     # ביצוע ניבוי על כל התמונות
     for image_path in array_of_path:
         # מבצע את הניבוי על התמונה
@@ -424,6 +434,12 @@ def main():
     #    'printAllLayersWeightsUniform',
     #    '5ImagesTestQuantization',
     #    'checkNanValuesWeights'
+
+    # # ביצוע ניבוי על כל התמונות
+    # for image_path in array_of_path:
+    #     # מבצע את הניבוי על התמונה
+    #     compare_quantization_methods(image_path)
+
     # טוענים את המודל ומבצעים קוונטיזציה
     model = resnet18(weights=ResNet18_Weights.DEFAULT)
     VERBOSE = ["printFirstLayer5weights"]
@@ -435,6 +451,7 @@ def main():
         # vec2quantize = model.conv1.weight.data.flatten()[:5]
         quantize_the_first_layer(model, "INT", 8, True)
         error(1)
+
 
     if 'printAllLayersTypes' in VERBOSE:  # print the all types of the  layers
         print("original types model")
@@ -451,7 +468,8 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    save_terminal_output_to_report(main)
+    # main()
 
 # F2P flavors: sr, lr, si, li
 # h
