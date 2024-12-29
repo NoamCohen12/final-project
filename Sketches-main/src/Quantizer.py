@@ -11,6 +11,7 @@ from SingleCntrSimulator import *
 from ResFileParser import *
 from settings import *
 
+np.set_printoptions(precision=NP_PRINT_PRECISION) 
 MAX_DF = 20
 
 # Dequantize the given vector, namely, multiply each element in it by the given scale.
@@ -74,8 +75,8 @@ def setPltParams (size : str = 'large') -> None:
 
 
 def clamp (
-        vec      : np.array,
-        lowerBnd : float,
+        vec      : np.array, 
+        lowerBnd : float, 
         upperBnd : float) -> np.array:
     """
     Clamp a the input vector vec, as follows.
@@ -85,11 +86,7 @@ def clamp (
     """
     vec[vec < lowerBnd] = lowerBnd
     vec[vec > upperBnd] = upperBnd
-    return vec
-
-
-
-
+    return vec 
 
 def calcErr (
         orgVec         : np.array, # vector before quantization 
@@ -155,31 +152,52 @@ def scaleGrid (grid : np.array, lowerBnd=0, upperBnd=100) -> np.array:
     scale = (upperBnd-lowerBnd) / (grid[-1]-grid[0])
     return scale * grid  
     # return [item*scale for item in grid] 
-
-def quantize (vec  : np.array, # The vector to quantize
-              grid : np.array  # The quantization grid (all the values that can be represented by the destination number representation
-              ) -> [np.array, float]: # [the_quantized_vector, the scale_factor (by which the vector was divided)]
+    
+def quantize (
+    vec                : np.array, # The vector to quantize 
+    grid               : np.array,  # The quantization grid (all the values that can be represented by the destination number representation
+    clampOutliers      : bool = False, # When True, clamp vec by removing all the values outside [lowerBnd, upperBnd], to remove outliers.
+    lowerBnd           : float = None,
+    upperBnd           : float = None,
+    useAsymmetricQuant : bool = False, # When True, use asymmetric quantization
+    verbose            : list = [] # verobse method, defined at settings.py
+    ) -> [np.array, float]: # [the_quantized_vector, the scale_factor (by which the vector was divided)] 
     """
-    Quantize an input vector, using symmetric Min-max quantization.
+    Quantize an input vector, using Min-max quantization. 
     This is done by:
     - Quantizing the vector, namely:
-      - Clamping and scaling the vector. The scaling method is minMax.
+      - Clamping (if requested).
+      - Scaling the vector. The scaling method is minMax.
+      - If the quantization is asymmetric, calculate an offest, add add it to the vector (not supproted yet). 
       - Rounding the vector to the nearest values in the grid.
     """
-    vec         = np.sort (vec)
-    upperBnd    = vec[-1] # The upper bound is the largest absolute value in the vector to quantize.
-    lowerBnd    = vec[0] # The lower bound is the largest absolute value in the vector to quantize.
-    scaledVec   = clamp (vec, lowerBnd, upperBnd)
-    if np.any(vec!=scaledVec):
-        error ('in Quantizer.quantize(). vec!=clamped vec.')
+    grid = np.array (grid)
+    vec  = np.array (vec)
+    if clampOutliers:
+        if lowerBnd==None or upperBnd==None:
+            error ('In Quantizer.quantize(). Clamp where requested, but lowerBnd or upperBnd was not specified.') 
+        vec   = clamp (vec, lowerBnd, upperBnd)
+    scale       = (max(vec)-min(vec)) / (max(grid)-min(grid))
+    if useAsymmetricQuant:
+        if min(grid)!=0:
+            error ('In Quantizeer.quant(). Asymmetric quantization is supported only for unsigned grid.')
+        error ('In Quantizeer.quant(). Sorry, but asymmetric quantization is currently not supported')
+    else:
+        z = 0
+    scaledVec   = vec/scale + z# The vector after scaling and clamping (still w/o rounding)  
+    if VERBOSE_DEBUG in verbose: 
+        print (f'scaledVec={scaledVec}') 
+    if str(grid.dtype).startswith('int'):
+        return [scaledVec.astype('int'), scale, z]
+    scaledVec   = np.sort (scaledVec)
     grid        = np.sort (grid)
-    scale       = (vec[-1]-vec[0]) / (max(grid)-min(grid))
-    z           = -vec[0]/scale
-    scaledVec   = vec/scale + z # The vector after scaling and clamping (still w/o rounding)
-    quantVec    = np.empty (len(vec)) # The quantized vector (after rounding scaledVec)
+
+    sorted_indices = np.argsort(scaledVec) # Get the indices that would sort the array
+    sclaedVec      = sorted_array = scaledVec[sorted_indices] # sort sclaedVec
+    quantVec    = np.empty (len(vec)) # The quantized vector (after rounding scaledVec) 
     idxInGrid = int(0)
     for idxInVec in range(len(scaledVec)):
-        if idxInGrid==len(grid): # already reached the max grid val --> all next items in q should be the last item in the grid
+        if idxInGrid==len(grid): # already reached the max grid val --> all next items in q should be the last item in the grid 
             quantVec[idxInVec] = grid[-1]
             continue
         quantVec[idxInVec]= grid[idxInGrid]
@@ -194,15 +212,16 @@ def quantize (vec  : np.array, # The vector to quantize
                idxInGrid -= 1
                quantVec[idxInVec] = grid[idxInGrid]
                break
-    return [quantVec, scale, z]
+    return [quantVec[sorted_indices], scale, z]
 
-def genVec2Quantize (dist       : str   = 'uniform',  # distribution from which points are drawn  
-                     lowerBnd   : float = 0,   # lower bound for the generated points  
-                     upperBnd   : float = 10,   # upper bound for the generated points
-                     stdev      : float = 1,   # standard variation when generating a Gaussian dist' points
-                     numPts     : int   = 1000, # Num of points in the generated vector
-                     outLier    : float = None,
-                     ) -> np.array:
+def genVec2Quantize (
+        dist       : str   = 'uniform',  # distribution from which points are drawn  
+        lowerBnd   : float = 0,   # lower bound for the generated points  
+        upperBnd   : float = 10,   # upper bound for the generated points
+        stdev      : float = 1,   # standard variation when generating a Gaussian dist' points
+        numPts     : int   = 1000, # Num of points in the generated vector
+        outLier    : float = None,
+    ) -> np.array:
     """
     Generate a vector to be quantized, using the requested distribution.
     """
@@ -221,26 +240,23 @@ def genVec2Quantize (dist       : str   = 'uniform',  # distribution from which 
         return np.array (vec)
     return np.array ([-outLier] + vec + [outLier])
     
-def calcQuantRoundErr (modes          : list  = [], # modes to be simulated, e.g. FP, F2P_sr. 
-                 cntrSize       : int   = 8,  # of bits, including the sign bit
-                 signed         : bool  = False, # When True, consider a signed counter
-                 vec2quantize   : list  = [], # The vector quantize. When None, randomly-generate the vector, where the distribution is drawn as specified by other input parameters. 
-                 dist           : str   = 'norm', # distribution of the points to simulate  
-                 numPts         : int   = 1000, # num of points in the quantized vec
-                 stdev          : float = 1,   # standard variation of the vector to quantize, when drawn from a Gaussian dist'
-                 vecLowerBnd    : float = -float('inf'), # lower Bnd of the generated vector to quantize, if drawn from a uniform dist'  
-                 vecUpperBnd    : float = float('inf'),   # upper Bnd of the generated vector to quantize, if drawn from a uniform dist'
-                 outLier        : float = None, # Outlier value, to be added to the generated vector
-                 verbose        : list  = [],  # level of verbose, as defined in settings.py.
-                 ):
+def calcQuantRoundErr (
+        cntrSize       : int   = 8,  # of bits, including the sign bit
+        modes          : list  = [], # modes to be simulated, e.g. FP, F2P_sr. 
+        signed         : bool  = False, # When True, consider a signed counter
+        vec2quantize   : list  = [], # The vector quantize. When None, randomly-generate the vector, where the distribution is drawn as specified by other input parameters. 
+        dist           : str   = 'norm', # distribution of the points to simulate  
+        numPts         : int   = 1000, # num of points in the quantized vec
+        stdev          : float = 1,   # standard variation of the vector to quantize, when drawn from a Gaussian dist'
+        vecLowerBnd    : float = -float('inf'), # lower Bnd of the generated vector to quantize, if drawn from a uniform dist'  
+        vecUpperBnd    : float = float('inf'),   # upper Bnd of the generated vector to quantize, if drawn from a uniform dist'
+        outLier        : float = None, # Outlier value, to be added to the generated vector
+        verbose        : list  = [],  # level of verbose, as defined in settings.py.
+    ):
     """
     Simulate the required configurations, and calculate the rounding quantization errors. Output the results (the quantization rounding errors) as defined by the verbose.
     """
     np.random.seed (SEED)
-    if VERBOSE_DEBUG in verbose:
-        numPts = 64
-    else:
-        numPts = min (numPts, vec2quantize.shape[0])
     if VERBOSE_RES in verbose:
         resFile = open (f'../res/{genRndErrFileName(cntrSize)}.res', 'a+')
         printf (resFile, f'// dist={dist}, stdev={stdev}, numPts={numPts}\n')
@@ -253,10 +269,10 @@ def calcQuantRoundErr (modes          : list  = [], # modes to be simulated, e.g
 
     if VERBOSE_PCL in verbose:
 
-        outputFileName = ResFileParser.genRndErrFileName (cntrSize)
+        outputFileName = genRndErrFileName (cntrSize)
         pclOutputFile = open(f'../res/pcl_files/{outputFileName}.pcl', 'ab+')
     
-    if vec2quantize==[]: # No given vector to quanitze - generate it yourself
+    if vec2quantize.shape==np.array([]).shape: # No given vector to quanitze - generate it yourself
         vec2quantize = genVec2Quantize (
             dist        = dist, 
             lowerBnd    = vecLowerBnd,   # lower bound for the generated points  
@@ -264,9 +280,14 @@ def calcQuantRoundErr (modes          : list  = [], # modes to be simulated, e.g
             stdev       = stdev, 
             outLier     = outLier,
             numPts      = numPts)
+    if VERBOSE_DEBUG in verbose:
+        numPts = 64
+    else:
+        numPts = min (numPts, vec2quantize.shape[0])
     vec2quantize = np.sort (vec2quantize)
     weightDist = None
     resRecords = []
+    modes = ['int']
     for mode in modes:
         if VERBOSE_DEBUG in verbose:
             debugFile = open ('../res/debug.txt', 'a+')
@@ -276,7 +297,6 @@ def calcQuantRoundErr (modes          : list  = [], # modes to be simulated, e.g
             grid                     = getAllValsFP(cntrSize=cntrSize, expSize=expSize, verbose=[], signed=signed)
             [quantizedVec, scale, z] = quantize(vec=vec2quantize, grid=grid)
             dequantizedVec           = dequantize(vec=quantizedVec, scale=scale, z=z)
-            
             resRecord = calcErr(
                     orgVec      = vec2quantize, 
                     changedVec  = dequantizedVec, 
@@ -308,9 +328,9 @@ def calcQuantRoundErr (modes          : list  = [], # modes to be simulated, e.g
             
         elif mode.startswith('int'):
             if signed: 
-                grid = np.array (range(-2**(cntrSize-1)+1, 2**(cntrSize-1), 1))
+                grid = np.array (range(-2**(cntrSize-1)+1, 2**(cntrSize-1), 1), dtype='int')
             else:
-                grid = np.array (range(2**cntrSize))
+                grid = np.array (range(2**cntrSize), dtype='int')
             [quantizedVec, scale, z] = quantize(vec=vec2quantize, grid=grid)
             dequantizedVec           = dequantize(vec=quantizedVec, scale=scale, z=z)
             resRecord = calcErr(
@@ -497,32 +517,75 @@ def npExperiments ():
     # print (f'mat={mat}')
     # print (f'shape={mat.shape}, type={mat.dtype}')
     print (vec[5:-5])
-    
+
+def runCalcQuantRoundErr ():
+    verbose = [VERBOSE_PCL, VERBOSE_RES]
+    stdev   = 1
+    for cntrSize in np.array([8, 16, 19], dtype='uint8'):
+        if VERBOSE_PCL in verbose:
+            pclOutputFileName = f'{genRndErrFileName(cntrSize)}.pcl'
+            # if os.path.exists(f'../res/pcl_files/{pclOutputFileName}'):
+            #     os.remove(f'../res/pcl_files/{pclOutputFileName}')
+        for distStr in ['uniform', 'norm', 't_5', 't_8']:
+        # for distStr in ['uniform', 'norm', 't_5', 't_8', 't_2', 't_10', 't_4', 't_6', 't_8']:
+            calcQuantRoundErr (
+                cntrSize       = cntrSize, 
+                modes          = settings.modesOfCntrSize(cntrSize), 
+                numPts         = 1000000, 
+                stdev          = stdev,
+                dist           = distStr, 
+                vecLowerBnd    = -stdev, 
+                vecUpperBnd    = stdev,
+                verbose = verbose
+                # outLier        = 100*stdev,
+            )   
+
+
+def testQuantization (
+        verbose : list = [],
+    ):
+    """
+    Basic test of the quantization
+    """
+    vec2quantize = np.array([-0.08, -0.01, 0.08,  0.05])
+    cntrSize = 8
+    if VERBOSE_PRINT_SCREEN in verbose:
+        print (f'vec2quantize={vec2quantize}')
+    if VERBOSE_DEBUG in verbose:
+        debugFile = open ('../res/debug.txt', 'w')
+        printf (debugFile, f'vec2quantize={vec2quantize}')
+
+    # Test signed int grid
+    grid = np.array (range(-2**(cntrSize-1)+1, 2**(cntrSize-1), 1), dtype='int')
+    [quantizedVec, scale, z] = quantize (vec=vec2quantize, grid=grid) 
+    dequantizedVec = dequantize (quantizedVec, scale, z) 
+    if VERBOSE_PRINT_SCREEN in verbose:
+        print (f'\ngrid={grid}\nquantizedVec={quantizedVec}, scale={scale}, z={z}\ndequantizedVec={dequantizedVec}\n')
+    if VERBOSE_DEBUG in verbose:
+        printf (debugFile, f'\ngrid={grid}\nquantizedVec={quantizedVec}\nscale={scale}, z={z}\ndequantizedVec={dequantizedVec}\n')
+        
+    # Test f2p_li_h2 grid
+    grid = getAllValsFxp (
+        fxpSettingStr = 'F2P_lr_h2',
+        cntrSize    = cntrSize, 
+        verbose     = [], 
+        signed      = True
+    )
+    [quantizedVec, scale, z] = quantize (vec=vec2quantize, grid=grid) 
+    dequantizedVec = dequantize (quantizedVec, scale, z) 
+    if VERBOSE_PRINT_SCREEN in verbose:
+        print (f'grid={grid}\nquantizedVec={quantizedVec}, scale={scale}, z={z}\ndequantizedVec={dequantizedVec}')
+    if VERBOSE_DEBUG in verbose:
+        printf (debugFile, f'grid={grid}\nvec2quantize={vec2quantize}\nquantizedVec={quantizedVec}\nscale={scale}, z={z}\ndequantizedVec={dequantizedVec}')
+        debugFile.close ()
+        
 if __name__ == '__main__':
     try:
+        testQuantization (verbose=[VERBOSE_DEBUG])
+        # runCalcQuantRoundErr ()
         # plotGrids (zoomXlim=None, cntrSize=7, modes=['F2P_li_h2', 'F2P_si_h2', 'FP_e5', 'FP_e2', 'int'], scale=False)
-        # None 
-        verbose = [VERBOSE_PCL, VERBOSE_RES]
-        stdev   = 1
-        for cntrSize in [8, 16, 19]:
-            if VERBOSE_PCL in verbose:
-                pclOutputFileName = f'{ResFileParser.genRndErrFileName (cntrSize)}.pcl'
-                # if os.path.exists(f'../res/pcl_files/{pclOutputFileName}'):
-                #     os.remove(f'../res/pcl_files/{pclOutputFileName}')
-            for distStr in ['uniform', 'norm', 't_5', 't_8']:
-            # for distStr in ['uniform', 'norm', 't_5', 't_8', 't_2', 't_10', 't_4', 't_6', 't_8']:
-                calcQuantRoundErr (cntrSize       = cntrSize, 
-                             modes          = settings.modesOfCntrSize(cntrSize), 
-                             numPts         = 1000000, 
-                             stdev          = stdev,
-                             dist           = distStr, 
-                             vecLowerBnd    = -stdev, 
-                             vecUpperBnd    = stdev,
-                             # outLier        = 100*stdev,
-                             verbose = verbose) #[VERBOSE_RES, VERBOSE_PLOT])  
 
     except KeyboardInterrupt:
         print('Keyboard interrupt.')
 
 # scaled 'F2P_lr_h1' is identical to int.
-
