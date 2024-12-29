@@ -2,6 +2,7 @@ import os
 import sys
 from datetime import datetime
 
+
 class Tee:
     def __init__(self, *files):
         self.files = files
@@ -14,12 +15,13 @@ class Tee:
         for f in self.files:
             f.flush()
 
+
 def save_terminal_output_to_report(func) -> None:
     # Find the current directory of the project
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
     # If the report directory does not exist, create it
-    reports_dir = os.path.join(base_dir, "report")
+    reports_dir = os.path.join(base_dir, "reports")
     os.makedirs(reports_dir, exist_ok=True)
 
     # Create a file name with the current date and time
@@ -42,4 +44,3 @@ def save_terminal_output_to_report(func) -> None:
 
     # Print the file saved message
     print(f"Output saved to: {file_path}")
-
