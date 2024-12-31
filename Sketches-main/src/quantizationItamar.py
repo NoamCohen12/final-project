@@ -84,6 +84,7 @@ def check_precision(prediction_list, prediction_list_quant) -> float:
     precision = correct / len(prediction_list_quant) if prediction_list_quant else 0.0
     return precision
 
+
 def check_recall(prediction_list, prediction_list_quant) -> float:
     """
     Calculate the recall of the quantized predictions.
@@ -101,8 +102,6 @@ def check_recall(prediction_list, prediction_list_quant) -> float:
     # Avoid division by zero
     recall = true_positives / len(prediction_list) if prediction_list else 0.0
     return recall
-
-
 
 
 def write_results_to_file(method, precision, recall):
@@ -135,6 +134,119 @@ def write_results_to_file(method, precision, recall):
     except Exception as e:
         print(f"Failed to write to file: {e}")
 
+
+def process_layer_parameter(parameter, quantization_type, cntrSize, signed, verbose=True, flavor=""):
+    """
+    Process a single layer parameter (weight or bias) for quantization.
+
+    Args:
+        parameter (torch.Tensor): The parameter to process (e.g., weights or biases).
+        quantization_type (str): The type of quantization to perform.
+        cntrSize (int): The number of bits for quantization.
+        signed (bool): Whether the quantization should support signed values.
+        verbose (bool): If True, print debug information.
+        flavor (str): Specific F2P flavor to apply.
+    """
+    if parameter is None:
+        return
+
+    if parameter.dtype == torch.float64:
+        parameter.data = parameter.data.float()
+
+    match quantization_type:
+        case "random":
+            parameter.data = random_tensor(parameter.data)
+        case "INT":
+            grid = generate_grid(cntrSize, signed)
+            parameter.data = quantize_tensor(parameter.data, grid, verbose, flavor)
+
+        case "F2P":
+            if not flavor:
+                raise ValueError("Flavor is required for F2P quantization.")
+
+            # Dynamically generate the fixed-point grid based on the flavor
+            grid = Quantizer.getAllValsFxp(
+                fxpSettingStr=flavor,
+                cntrSize=cntrSize,
+                verbose=[],
+                signed=signed
+            )
+            parameter.data = quantize_tensor(parameter.data, grid, verbose, flavor)
+
+            if verbose:
+                print(f"Quantized parameter with F2P flavor '{flavor}':")
+                print("5 weights:", parameter.data.flatten()[:5])
+                print("Grid:", grid)
+        case _:
+            raise ValueError(f"Invalid quantization type '{quantization_type}'")
+
+
+def quantize_all_layers(
+        model,
+        quantization_type: str = "random",
+        signed: bool = False,
+        cntrSize=8,
+        verbose: bool = False,
+        flavor: str = "") -> torch.nn.Module:
+    """
+    Perform quantization on all layers of the model.
+
+    Args:
+        model (torch.nn.Module): The model to quantize.
+        quantization_type (str): The type of quantization (e.g., "F2P").
+        signed (bool): Whether the quantization grid supports signed values.
+        cntrSize (int): The number of bits for quantization.
+        verbose (bool): If True, print debug information.
+        flavor (str): Specific flavor for F2P quantization.
+
+    Returns:
+        torch.nn.Module: The quantized model.
+    """
+    print("Quantization type:", quantization_type)
+    for name, layer in model.named_modules():
+        if isinstance(layer, (torch.nn.Conv2d, torch.nn.Linear)):
+            # Process weights
+            if verbose:
+                print(f"Quantizing weights for layer: {name}")
+            process_layer_parameter(layer.weight, quantization_type, cntrSize, signed, verbose, flavor)
+
+            # Process biases
+            process_layer_parameter(layer.bias, quantization_type, cntrSize, signed, verbose, flavor)
+
+    return model
+
+
+def quantize_model_switch(model, method="None", flavor="F2P_li_h2"):
+    """
+    Quantizes the given model based on the specified method and flavor.
+
+    Args:
+        model (torch.nn.Module): The model to be quantized.
+        method (str): The quantization method (e.g., "F2P").
+        flavor (str): The specific F2P flavor (e.g., "F2P_li_h2").
+
+    Returns:
+        torch.nn.Module: The quantized model.
+    """
+    # F2P flavors: sr, lr, si, li
+    # Example: F2P_lr_h2, F2P_sr_h2, F2P_si_h2, F2P_li_h2
+    quantization_methods = {
+        "None": lambda m: m,  # Return the original model
+        "INT8": lambda m: quantize_all_layers(m, quantization_type="INT", cntrSize=8),
+        "INT16": lambda m: quantize_all_layers(m, quantization_type="INT", cntrSize=16),
+        "F2P_lr_h2": lambda m: quantize_all_layers(m, quantization_type="F2P", cntrSize=16, flavor="F2P_lr_h2"),
+        "F2P_sr_h2": lambda m: quantize_all_layers(m, quantization_type="F2P", cntrSize=16, flavor="F2P_sr_h2"),
+        "F2P_si_h2": lambda m: quantize_all_layers(m, quantization_type="F2P", cntrSize=8, flavor="F2P_si_h2"),
+        "F2P_li_h2": lambda m: quantize_all_layers(m, quantization_type="F2P", cntrSize=8, flavor="F2P_li_h2"),
+
+    }
+
+    # Apply the selected quantization method
+    quantized_model = quantization_methods.get(method, lambda m: m)(model)
+
+    return quantized_model
+
+
 def get_precision_of_all_quotations(list_of_images, device="cpu", test=True) -> None:
     """
     Predict the labels of a list of images using ResNet18 and compare
@@ -157,7 +269,8 @@ def get_precision_of_all_quotations(list_of_images, device="cpu", test=True) -> 
     if test:
         print("org:")
         print_prob(model, list_of_images, device)
-
+        print("before qunt")
+        printing_5(model)
 
     # Generate predictions with the original model
     prediction_list = []
@@ -167,10 +280,14 @@ def get_precision_of_all_quotations(list_of_images, device="cpu", test=True) -> 
             prediction_list.append(label)
 
     # Iterate over quantization methods and evaluate precision
-    for method in ["INT8", "INT16", "F2P"]:
+    for method in ["INT8", "INT16", "F2P_lr_h2", "F2P_sr_h2", "F2P_si_h2", "F2P_li_h2"]:
         try:
+
             # Quantize the model
             quantized_model = quantize_model_switch(model, method=method)
+            if method == "F2P":
+                print("after qunt f2p")
+                printing_5(quantized_model)
             if test:
                 print("method:", method)
                 print_prob(quantized_model, list_of_images, device)
@@ -195,32 +312,6 @@ def get_precision_of_all_quotations(list_of_images, device="cpu", test=True) -> 
             write_results_to_file(method, precision, recall)
         except Exception as e:
             print(f"Failed to process method {method}: {e}")
-
-
-def quantize_model_switch(model, method="None"):
-    """
-    Quantizes the given model based on the specified method.
-
-    Args:
-        model (torch.nn.Module): The model to be quantized.
-        method (str): The quantization method. One of {"None", "INT8", "INT16", "F2P", "Morris"}.
-        num_bits (int): The number of bits for quantization.
-
-    Returns:
-        torch.nn.Module: The quantized model.
-    """
-    quantization_methods = {
-        "None": lambda m: m,  # Return the original model
-        "INT8": lambda m: quantize_all_layers(m, quantization_type="INT", cntrSize=8),
-        "INT16": lambda m: quantize_all_layers(m, quantization_type="INT", cntrSize=16),
-        "F2P": lambda m: quantize_all_layers(m, quantization_type="F2P", cntrSize=8),
-
-    }
-
-    # Apply the selected quantization method
-    quantized_model = quantization_methods.get(method, lambda m: m)(model)
-    print(f"Model quantized with {method}")
-    return quantized_model
 
 
 def printing_5(model):
@@ -318,59 +409,7 @@ def quantize_tensor(tensor, grid, verbose=False, type=""):
     return torch.from_numpy(dequantized).view(tensor.shape).to(tensor.device)
 
 
-def process_layer_parameter(parameter, quantization_type, cntrSize, signed, verbose=False, type=""):
-    """
-    Process a single layer parameter (weight or bias) for quantization.
-
-    """
-    if parameter is None:
-        return
-    if parameter.dtype == torch.float64:
-        parameter.data = parameter.data.float()
-
-    match quantization_type:
-        case "random":
-            parameter.data = random_tensor(parameter.data)
-        case "INT":
-            grid = generate_grid(cntrSize, signed)
-            parameter.data = quantize_tensor(parameter.data, grid, verbose, type)
-
-        case "F2P":
-            grid = Quantizer.getAllValsFxp(
-                fxpSettingStr='F2P_lr_h2',
-                cntrSize=cntrSize,
-                verbose=[],
-                signed=signed
-            )
-            parameter.data = quantize_tensor(parameter.data, grid, verbose, type)
-        case _:
-            raise ValueError(f"Invalid quantization type '{quantization_type}'")
-
-
-def quantize_all_layers(
-        model,
-        quantization_type: str = "random",
-        signed: bool = True,
-        cntrSize=8,
-        verbose: bool = False) -> torch.nn.Module:
-    """
-    Perform quantization on all layers of the model.
-    """
-    print("quant_type:", quantization_type)
-    for name, layer in model.named_modules():
-        if isinstance(layer, (torch.nn.Conv2d, torch.nn.Linear)):
-            # Process weights
-            if (verbose):
-                print(f"Quantizing weights for layer: {name}")
-            process_layer_parameter(layer.weight, quantization_type, cntrSize, signed, verbose, type="weight")
-
-            # Process biases
-            process_layer_parameter(layer.bias, quantization_type, cntrSize, signed, verbose, type="bias")
-
-    return model
-
-
-def print_prob(model,image_path, device="cpu"):
+def print_prob(model, image_path, device="cpu"):
     model = model.to(device)
     for idx, i in enumerate(image_path):
 
@@ -403,7 +442,6 @@ def quantize_the_first_layer(model, quantization_type, cntrSize, signed):
     print(model.conv1.weight.data.flatten()[:5])
 
 
-
 def main():
     # check if the path is correct
     images_path = r"..\..\100 animals"  # 100 animals
@@ -413,12 +451,9 @@ def main():
     get_precision_of_all_quotations(lst)
     error(1)
 
-
     # טוענים את המודל ומבצעים קוונטיזציה
     model = resnet18(weights=ResNet18_Weights.DEFAULT)
     VERBOSE = ["printFirstLayer5weights"]
-
-
 
     if 'printFirstLayer5weights' in VERBOSE:  # print the first 5 weights of the first layer
         # vec2quantize = model.conv1.weight.data.flatten()[:5]
@@ -441,7 +476,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-# F2P flavors: sr, lr, si, li
-# h
-# Example: F2P_lr_h2, F2P_sr_h2,
