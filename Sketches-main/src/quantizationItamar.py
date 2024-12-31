@@ -68,16 +68,21 @@ def getImageList(folderPath) -> list:
 
 def check_precision(prediction_list, prediction_list_quant) -> float:
     """
-    check the precision of the quantization
-    """
-    # חישוב דיוק הניבוי
-    correct = 0
-    for label in prediction_list_quant:
-        if label in prediction_list:
-            correct += 1
-    precision = correct / len(prediction_list_quant)
-    return precision
+    Calculate the precision of the quantized predictions.
 
+    Args:
+        prediction_list (list): The ground truth labels (original model predictions).
+        prediction_list_quant (list): The predicted labels from the quantized model.
+
+    Returns:
+        float: The precision value.
+    """
+    # Count correct predictions
+    correct = sum(1 for label in prediction_list_quant if label in prediction_list)
+
+    # Avoid division by zero
+    precision = correct / len(prediction_list_quant) if prediction_list_quant else 0.0
+    return precision
 
 def check_recall(prediction_list, prediction_list_quant) -> float:
     """
@@ -90,18 +95,19 @@ def check_recall(prediction_list, prediction_list_quant) -> float:
     Returns:
         float: The recall value.
     """
-    # Count true positives (labels in the ground truth that were correctly predicted)
+    # Count true positives
     true_positives = sum(1 for label in prediction_list if label in prediction_list_quant)
 
-    # Calculate recall
+    # Avoid division by zero
     recall = true_positives / len(prediction_list) if prediction_list else 0.0
     return recall
 
 
-# TODO: create 3 files for each run
+
+
 def write_results_to_file(method, precision, recall):
     """
-    Write the precision and recall results of a quantization method to a new file for each run.
+    Write the precision and recall results of all quantization methods to a single file.
 
     Args:
         method (str): The quantization method used.
@@ -109,18 +115,15 @@ def write_results_to_file(method, precision, recall):
         recall (float): The recall of the method.
     """
     try:
-        # Get the current date and time for the file name
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-
-        # Define the directory and ensure it exists
+        # Define a fixed file name
         report_directory = os.path.join(os.getcwd(), "reports")
         if not os.path.exists(report_directory):
             os.makedirs(report_directory)
 
-        # Create a unique file path for each run using the timestamp
-        file_path = os.path.join(report_directory, f"results_{timestamp}.txt")
+        # Use a single fixed file for all methods
+        file_path = os.path.join(report_directory, "results_summary.txt")
 
-        # Append results to the file
+        # Append results to the single file
         with open(file_path, "a") as file:
             file.write("--------------------------------------------\n")
             file.write(f"Method: {method}\n")
@@ -132,8 +135,7 @@ def write_results_to_file(method, precision, recall):
     except Exception as e:
         print(f"Failed to write to file: {e}")
 
-
-def get_precision_of_all_quotations(list_of_images, device="cpu", test=False) -> None:
+def get_precision_of_all_quotations(list_of_images, device="cpu", test=True) -> None:
     """
     Predict the labels of a list of images using ResNet18 and compare
     the precision of various quantization methods.
@@ -154,8 +156,8 @@ def get_precision_of_all_quotations(list_of_images, device="cpu", test=False) ->
     model.eval()  # Set model to evaluation mode
     if test:
         print("org:")
-        printing_5(model)
-        test_5pic(model)
+        print_prob(model, list_of_images, device)
+
 
     # Generate predictions with the original model
     prediction_list = []
@@ -171,8 +173,7 @@ def get_precision_of_all_quotations(list_of_images, device="cpu", test=False) ->
             quantized_model = quantize_model_switch(model, method=method)
             if test:
                 print("method:", method)
-                printing_5(quantized_model)
-                test_5pic(quantized_model)
+                print_prob(quantized_model, list_of_images, device)
             quantized_model = quantized_model.to(device)
             quantized_model.eval()  # Set quantized model to evaluation mode
 
@@ -320,7 +321,7 @@ def quantize_tensor(tensor, grid, verbose=False, type=""):
 def process_layer_parameter(parameter, quantization_type, cntrSize, signed, verbose=False, type=""):
     """
     Process a single layer parameter (weight or bias) for quantization.
-    #todo:change the parm name
+
     """
     if parameter is None:
         return
@@ -349,7 +350,7 @@ def process_layer_parameter(parameter, quantization_type, cntrSize, signed, verb
 def quantize_all_layers(
         model,
         quantization_type: str = "random",
-        signed: bool = False,
+        signed: bool = True,
         cntrSize=8,
         verbose: bool = False) -> torch.nn.Module:
     """
@@ -369,25 +370,20 @@ def quantize_all_layers(
     return model
 
 
-def test_5pic(model, device="cpu"):
+def print_prob(model,image_path, device="cpu"):
     model = model.to(device)
-    # הגדרת נתיב לתמונה שאתה רוצה לנבא עליה
-    image_path_dog = r"5pics\dog.jpg"  # שם התמונה שלך
-    image_path_cat = r"5pics\cat.jpeg"  # שם התמונה שלך
-    image_path_kite = r"5pics\kite.jpg"  # שם התמונה שלך
-    image_path_lion = r"5pics\lion.jpeg"  # שם התמונה שלך
-    image_path_paper = r"5pics\paper.jpg"  # שם התמונה שלך
-    array_of_path = [image_path_dog, image_path_cat, image_path_kite, image_path_lion, image_path_paper]
+    for idx, i in enumerate(image_path):
 
-    # ביצוע ניבוי על כל התמונות
-    for image_path in array_of_path:
-        # מבצע את הניבוי על התמונה
-        label, class_index, probabilities = predict_image(model, image_path, device)
+        if idx >= 10:
+            break
+
+        label, class_index, probabilities = predict_image(model, i, device)
 
         if label:
             predicted_label = label
             predicted_prob = probabilities[class_index].item() * 100
             print(f"Prediction: {predicted_label[1]} (Class Index: {class_index}, Probability: {predicted_prob:.2f}%)")
+
         else:
             print("Prediction failed.")
 
@@ -405,7 +401,7 @@ def quantize_the_first_layer(model, quantization_type, cntrSize, signed):
             break
     print("after")
     print(model.conv1.weight.data.flatten()[:5])
-    test_5pic(model)
+
 
 
 def main():
@@ -417,19 +413,12 @@ def main():
     get_precision_of_all_quotations(lst)
     error(1)
 
-    # 'print5weights',
-    #    'printFirstLayer5weights',
-    #    'printFirstLayerWeightsUniform',
-    #    'printAllLayersTypes',
-    #    'printAllLayersWeightsUniform',
-    #    '5ImagesTestQuantization',
-    #    'checkNanValuesWeights'
+
     # טוענים את המודל ומבצעים קוונטיזציה
     model = resnet18(weights=ResNet18_Weights.DEFAULT)
     VERBOSE = ["printFirstLayer5weights"]
 
-    if 'printFirstLayerWeightsUniform' in VERBOSE:
-        test_5pic(model)
+
 
     if 'printFirstLayer5weights' in VERBOSE:  # print the first 5 weights of the first layer
         # vec2quantize = model.conv1.weight.data.flatten()[:5]

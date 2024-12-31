@@ -27,7 +27,7 @@ This project focuses on implementing quantization techniques for a neural networ
 
 ---
 
-## 3. Enhance Output Debugging
+## 3. Enhance Output Debugging(DONE)
 
 - **Task Description**:  
   To enhance the debugging process, we will print important interim values, especially focusing on the outputs of the first layer when it is quantized. Additionally, we will structure the code to print only relevant and concise details. For example, instead of printing the entire output, we’ll focus on printing the key information such as:
@@ -59,7 +59,7 @@ This project focuses on implementing quantization techniques for a neural networ
 
 ---
 
-## 6. General Advice for Debugging
+## 6. General Advice for Debugging(DONE)
 
 - **Task Description**:  
   Work methodically and break down your debugging process step by step. Focus on printing only the most relevant information, which will help in understanding how the quantization is affecting the weights and model outputs. Avoid cluttering the logs with unnecessary details.
@@ -77,6 +77,9 @@ This project focuses on implementing quantization techniques for a neural networ
 - **Benefit**:  
   Adds flexibility to the quantization process and improves the robustness of the system.
 
+---
+
+## 8. FIX THE WRITING TO FILE
 ---
 
 ## Conclusion
