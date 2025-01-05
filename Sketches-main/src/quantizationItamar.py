@@ -2,6 +2,7 @@ import json
 from PIL import Image
 import torch
 import torchvision.transforms as transforms
+from sklearn.metrics import precision_score, recall_score, accuracy_score
 from torchvision.models import resnet18, ResNet18_Weights
 import sys
 
@@ -65,24 +66,19 @@ def getImageList(folderPath) -> list:
                 imageList.append(os.path.join(subfolderPath, image_path))
     return imageList
 
-
 def check_precision(prediction_list, prediction_list_quant) -> float:
     """
-    Calculate the precision of the quantized predictions.
+    Calculate the recall of the quantized predictions.
 
     Args:
         prediction_list (list): The ground truth labels (original model predictions).
         prediction_list_quant (list): The predicted labels from the quantized model.
 
     Returns:
-        float: The precision value.
+        float: The recall value.
     """
-    # Count correct predictions
-    correct = sum(1 for label in prediction_list_quant if label in prediction_list)
-
-    # Avoid division by zero
-    precision = correct / len(prediction_list_quant) if prediction_list_quant else 0.0
-    return precision
+    # Count true positives
+    return precision_score(prediction_list, prediction_list_quant,average=None, zero_division=1)
 
 
 def check_recall(prediction_list, prediction_list_quant) -> float:
@@ -97,11 +93,7 @@ def check_recall(prediction_list, prediction_list_quant) -> float:
         float: The recall value.
     """
     # Count true positives
-    true_positives = sum(1 for label in prediction_list if label in prediction_list_quant)
-
-    # Avoid division by zero
-    recall = true_positives / len(prediction_list) if prediction_list else 0.0
-    return recall
+    return recall_score(prediction_list, prediction_list_quant,average=None, zero_division=1)
 
 
 def write_results_to_file(method, precision, recall):
@@ -234,10 +226,7 @@ def quantize_model_switch(model, method="None", flavor="F2P_li_h2"):
         "None": lambda m: m,  # Return the original model
         "INT8": lambda m: quantize_all_layers(m, quantization_type="INT", cntrSize=8),
         "INT16": lambda m: quantize_all_layers(m, quantization_type="INT", cntrSize=16),
-        "F2P_lr_h2": lambda m: quantize_all_layers(m, quantization_type="F2P", cntrSize=16, flavor="F2P_lr_h2"),
-        "F2P_sr_h2": lambda m: quantize_all_layers(m, quantization_type="F2P", cntrSize=16, flavor="F2P_sr_h2"),
-        "F2P_si_h2": lambda m: quantize_all_layers(m, quantization_type="F2P", cntrSize=8, flavor="F2P_si_h2"),
-        "F2P_li_h2": lambda m: quantize_all_layers(m, quantization_type="F2P", cntrSize=8, flavor="F2P_li_h2"),
+        "F2P": lambda m: quantize_all_layers(m, quantization_type="F2P", cntrSize=16),
 
     }
 
