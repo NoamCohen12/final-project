@@ -122,6 +122,30 @@ def testQuantization_INT16(
                f'grid={grid}\nvec2quantize={vec2quantize}\nquantizedVec={quantizedVec}\nscale={scale}, z={z}\ndequantizedVec={dequantizedVec}')
         debugFile.close()
 
+    #------------------------------------------------------------------
+    # Test f2p_lr_h2 grid noam test
+    vec2quantize = np.array([0.058345668, 0.25526232,0.291172835,0.5178178, 0.5834567])
+
+    fxpSettingStr = 'F2P_lr_h2'
+    sign = False
+    grid = getAllValsFxp(
+        fxpSettingStr='F2P_lr_h2',
+        cntrSize=cntrSize,
+        verbose=[],
+        signed=sign
+    )
+    print(f'noam grid parameters:\n  fxpSettingsStr: {fxpSettingStr} | cntrSize: {cntrSize} | signed: {sign}')
+    [quantizedVec, scale, z] = quantize(vec=vec2quantize, grid=grid)
+    dequantizedVec = dequantize(quantizedVec, scale, z)
+    print(f'vec2quantize={vec2quantize}')
+    if VERBOSE_PRINT_SCREEN in verbose:
+        print(
+        f'grid={grid[:5]}...{grid[-5:]}\nquantizedVec={quantizedVec}, scale={scale}, z={z}\ndequantizedVec={dequantizedVec}\n')
+    if VERBOSE_DEBUG in verbose:
+        printf(debugFile,
+                f'grid={grid}\nvec2quantize={vec2quantize}\nquantizedVec={quantizedVec}\nscale={scale}, z={z}\ndequantizedVec={dequantizedVec}')
+        debugFile.close()
+
     # Test f2p_li_h2 grid
     fxpSettingStr = 'F2P_li_h2'
     sign = True
@@ -305,7 +329,7 @@ def test_int8_quantization(verbose: list = []):
             # Log the results
             if 'VERBOSE_PRINT_SCREEN' in verbose:
                 print("Grid:")
-                print(grid)
+                print(f"{grid[:5]}...{grid[-5:]}")
                 print(f"Quantized Vector: {quantizedVec}")
                 print(f"Scale: {scale}, Zero-point: {z}")
                 print(f"Dequantized Vector: {dequantizedVec}")
@@ -317,7 +341,7 @@ def test_int8_quantization(verbose: list = []):
                 with open(f"../res/debug_test_{i + 1}.txt", "w") as debugFile:
                     debugFile.write(
                         f"Input Vector (vec2quantize): {vec2quantize}\n"
-                        f"Grid: {grid}\n"
+                        f"Grid: g{grid[:5]}...{grid[-5:]}\n"
                         f"Quantized Vector: {quantizedVec}\n"
                         f"Scale: {scale}, Zero-point: {z}\n"
                         f"Dequantized Vector: {dequantizedVec}\n"
