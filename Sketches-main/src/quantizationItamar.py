@@ -37,7 +37,7 @@ def random_tensor(tensor) -> torch.Tensor:
 
         # חישוב סטיית שגיאה (רק לצורך הדגמה)
         mse_error = np.mean((tensor_flat - randomized_dequantized) ** 2)
-        print(f"Randomization MSE error: {mse_error:.6f}")
+        # print(f"Randomization MSE error: {mse_error:.6f}")
 
     except Exception as e:
         print(f"Randomization error: {e}")
@@ -206,7 +206,7 @@ def process_layer_parameter(parameter, quantization_type, cntrSize, signed, verb
         parameter.data = parameter.data.float()
 
     match quantization_type:
-        case "random":
+        case "RANDOM":
             parameter.data = random_tensor(parameter.data)
         case "INT":
             grid = generate_grid(cntrSize, signed)
@@ -235,8 +235,8 @@ def process_layer_parameter(parameter, quantization_type, cntrSize, signed, verb
 
 def quantize_all_layers(
         model,
-        quantization_type: str = "random",
-        signed: bool = False,
+        quantization_type: str = "RANDOM",
+        signed: bool = True,
         cntrSize=8,
         verbose: bool = False,
         flavor: str = "") -> torch.nn.Module:
@@ -285,6 +285,7 @@ def quantize_model_switch(model, method="None", flavor="F2P_li_h2") -> torch.nn.
         "None": lambda m: m,  # Return the original model
         "INT8": lambda m: quantize_all_layers(m, quantization_type="INT", cntrSize=8),
         "INT16": lambda m: quantize_all_layers(m, quantization_type="INT", cntrSize=16),
+        "RANDOM": lambda m: quantize_all_layers(m, quantization_type="RANDOM"),
     }
 
     # Handle F2P with specific flavors
@@ -331,7 +332,7 @@ def get_precision_of_all_quotations(list_of_images, device="cpu", test=True) -> 
             prediction_list.append(label)
 
     # Iterate over quantization methods and evaluate precision
-    for method in ["INT8","INT16","F2P_lr_h2", "F2P_sr_h2", "F2P_si_h2", "F2P_li_h2"]:
+    for method in ["INT8","INT16","F2P_lr_h2", "F2P_sr_h2", "F2P_si_h2", "F2P_li_h2", "RANDOM"]:
         try:
 
             # Quantize the model
