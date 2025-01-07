@@ -69,7 +69,7 @@ This project focuses on implementing quantization techniques for a neural networ
 
 ---
 
-## 7. F2P: Implement the Variant Type of F2P
+## 7. F2P: Implement the Variant Type of F2P(DONE)
 
 - **Task Description**:  
   Implement a variant type of the `F2P` quantization technique. This will involve ensuring that different `F2P` variants are correctly handled by the quantizer and incorporated into the quantization process.

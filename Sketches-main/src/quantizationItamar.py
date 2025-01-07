@@ -66,63 +66,123 @@ def getImageList(folderPath) -> list:
                 imageList.append(os.path.join(subfolderPath, image_path))
     return imageList
 
+
 def check_precision(prediction_list, prediction_list_quant) -> float:
     """
-    Calculate the recall of the quantized predictions.
+    Calculate the precision of the quantized predictions for multiclass/multioutput cases.
+    This works with both single-label and multi-label classification.
 
     Args:
         prediction_list (list): The ground truth labels (original model predictions).
         prediction_list_quant (list): The predicted labels from the quantized model.
 
     Returns:
-        float: The recall value.
+        float: The precision value for multiclass/multioutput.
     """
-    # Count true positives
-    return precision_score(prediction_list, prediction_list_quant,average=None, zero_division=1)
+    # Initialize counters for each class
+    class_counts = defaultdict(lambda: {'tp': 0, 'fp': 0, 'fn': 0})
+
+    # Iterate over the predictions and ground truths
+    for true_label, pred_label in zip(prediction_list, prediction_list_quant):
+        # Convert labels to tuples to make them hashable (in case of multi-labels)
+        true_label = tuple(true_label) if isinstance(true_label, list) else (true_label,)
+        pred_label = tuple(pred_label) if isinstance(pred_label, list) else (pred_label,)
+
+        # Count true positives, false positives, and false negatives
+        if pred_label == true_label:
+            class_counts[true_label]['tp'] += 1  # True positive
+        else:
+            class_counts[true_label]['fn'] += 1  # False negative
+            class_counts[pred_label]['fp'] += 1  # False positive
+
+    # Compute precision for each class
+    total_precision = 0.0
+    total_classes = 0
+    for class_label, counts in class_counts.items():
+        tp = counts['tp']
+        fp = counts['fp']
+        # Precision = TP / (TP + FP)
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        total_precision += precision
+        total_classes += 1
+
+    # Compute average precision
+    avg_precision = total_precision / total_classes if total_classes > 0 else 0.0
+    return avg_precision
+
+
+from collections import defaultdict
 
 
 def check_recall(prediction_list, prediction_list_quant) -> float:
     """
-    Calculate the recall of the quantized predictions.
+    Calculate the recall of the quantized predictions for multiclass/multioutput cases.
+    This works with both single-label and multi-label classification.
 
     Args:
         prediction_list (list): The ground truth labels (original model predictions).
         prediction_list_quant (list): The predicted labels from the quantized model.
 
     Returns:
-        float: The recall value.
+        float: The recall value for multiclass/multioutput.
     """
-    # Count true positives
-    return recall_score(prediction_list, prediction_list_quant,average=None, zero_division=1)
+    # Initialize counters for each class
+    class_counts = defaultdict(lambda: {'tp': 0, 'fp': 0, 'fn': 0})
+
+    # Iterate over the predictions and ground truths
+    for true_label, pred_label in zip(prediction_list, prediction_list_quant):
+        # Convert labels to tuples to make them hashable (in case of multi-labels)
+        true_label = tuple(true_label) if isinstance(true_label, list) else (true_label,)
+        pred_label = tuple(pred_label) if isinstance(pred_label, list) else (pred_label,)
+
+        # Count true positives, false positives, and false negatives
+        if pred_label == true_label:
+            class_counts[true_label]['tp'] += 1  # True positive
+        else:
+            class_counts[true_label]['fn'] += 1  # False negative
+            class_counts[pred_label]['fp'] += 1  # False positive
+
+    # Compute recall for each class
+    total_recall = 0.0
+    total_classes = 0
+    for class_label, counts in class_counts.items():
+        tp = counts['tp']
+        fn = counts['fn']
+        # Recall = TP / (TP + FN)
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        total_recall += recall
+        total_classes += 1
+
+    # Compute average recall
+    avg_recall = total_recall / total_classes if total_classes > 0 else 0.0
+    return avg_recall
 
 
-def write_results_to_file(method, precision, recall):
+def write_results_to_file(statistics: str) -> None:
     """
-    Write the precision and recall results of all quantization methods to a single file.
+    Write the precision and recall results of all quantization methods to a new file with a timestamp.
 
     Args:
-        method (str): The quantization method used.
-        precision (float): The precision of the method.
-        recall (float): The recall of the method.
+        statistics (str): The string containing the precision and recall statistics.
     """
     try:
-        # Define a fixed file name
+        # Define a directory for reports
         report_directory = os.path.join(os.getcwd(), "reports")
         if not os.path.exists(report_directory):
             os.makedirs(report_directory)
 
-        # Use a single fixed file for all methods
-        file_path = os.path.join(report_directory, "results_summary.txt")
+        # Generate a unique file name with the current date and time
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        file_name = f"results_{timestamp}.txt"
+        file_path = os.path.join(report_directory, file_name)
 
-        # Append results to the single file
-        with open(file_path, "a") as file:
+        # Write results to the new file
+        with open(file_path, "w") as file:
             file.write("--------------------------------------------\n")
-            file.write(f"Method: {method}\n")
-            file.write(f"Precision: {precision:.3f}\n")
-            file.write(f"Recall: {recall:.3f}\n")
-            file.write("\n")
+            file.write(statistics)
 
-        print(f"Results for method {method} written to {file_path} successfully.")
+
+        print(f"Results written to {file_path} successfully.")
     except Exception as e:
         print(f"Failed to write to file: {e}")
 
@@ -208,32 +268,34 @@ def quantize_all_layers(
     return model
 
 
-def quantize_model_switch(model, method="None", flavor="F2P_li_h2"):
+def quantize_model_switch(model, method="None", flavor="F2P_li_h2") -> torch.nn.Module:
     """
     Quantizes the given model based on the specified method and flavor.
 
     Args:
         model (torch.nn.Module): The model to be quantized.
-        method (str): The quantization method (e.g., "F2P").
+        method (str): The quantization method (e.g., "F2P", "INT8").
         flavor (str): The specific F2P flavor (e.g., "F2P_li_h2").
 
     Returns:
         torch.nn.Module: The quantized model.
     """
-    # F2P flavors: sr, lr, si, li
-    # Example: F2P_lr_h2, F2P_sr_h2, F2P_si_h2, F2P_li_h2
+    # Quantization methods
     quantization_methods = {
         "None": lambda m: m,  # Return the original model
         "INT8": lambda m: quantize_all_layers(m, quantization_type="INT", cntrSize=8),
         "INT16": lambda m: quantize_all_layers(m, quantization_type="INT", cntrSize=16),
-        "F2P": lambda m: quantize_all_layers(m, quantization_type="F2P", cntrSize=16),
-
     }
+
+    # Handle F2P with specific flavors
+    if method.startswith("F2P_"):
+        return quantize_all_layers(model, quantization_type="F2P", cntrSize=8, flavor=method)
 
     # Apply the selected quantization method
     quantized_model = quantization_methods.get(method, lambda m: m)(model)
 
     return quantized_model
+
 
 
 def get_precision_of_all_quotations(list_of_images, device="cpu", test=True) -> None:
@@ -250,7 +312,7 @@ def get_precision_of_all_quotations(list_of_images, device="cpu", test=True) -> 
     """
     if not list_of_images:
         raise ValueError("The list of images is empty.")
-
+    statistics = ""
     # Load the original ResNet18 model
     model = resnet18(weights=ResNet18_Weights.DEFAULT)
     model = model.to(device)
@@ -269,12 +331,12 @@ def get_precision_of_all_quotations(list_of_images, device="cpu", test=True) -> 
             prediction_list.append(label)
 
     # Iterate over quantization methods and evaluate precision
-    for method in ["INT8", "INT16", "F2P_lr_h2", "F2P_sr_h2", "F2P_si_h2", "F2P_li_h2"]:
+    for method in ["INT8","INT16","F2P_lr_h2", "F2P_sr_h2", "F2P_si_h2", "F2P_li_h2"]:
         try:
 
             # Quantize the model
             quantized_model = quantize_model_switch(model, method=method)
-            if method == "F2P":
+            if method.startswith("F2P_"):
                 print("after qunt f2p")
                 printing_5(quantized_model)
             if test:
@@ -296,11 +358,14 @@ def get_precision_of_all_quotations(list_of_images, device="cpu", test=True) -> 
             recall = check_recall(prediction_list, prediction_list_quant)
             print(f"Precision of {method}: {precision:.3f}")
             print(f"Recall of {method}: {recall:.3f}")
+            # add to statistics Precision and Recall
+            statistics += "method: " + method + "\n" + " Precision: " + str(precision) + "\n" + " Recall: " + str(
+                recall) + "\n"+ "--------------------------------------------\n"
 
-            # Save results to file
-            write_results_to_file(method, precision, recall)
         except Exception as e:
             print(f"Failed to process method {method}: {e}")
+    # Save results to file
+    write_results_to_file(statistics)
 
 
 def printing_5(model):

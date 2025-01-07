@@ -259,7 +259,7 @@ def testQuantization_INT16(
     #             f'grid={grid}\nvec2quantize={vec2quantize}\nquantizedVec={quantizedVec}\nscale={scale}, z={z}\ndequantizedVec={dequantizedVec}')
     #     debugFile.close()
 
-    def test_int8_quantization(verbose: list = []):
+def test_int8_quantization(verbose: list = []):
         """
         Additional tests for INT8 quantization
         """
