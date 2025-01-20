@@ -1,91 +1,64 @@
-# Quantization and Debugging Process
-
-This project focuses on implementing quantization techniques for a neural network model, debugging the effects of quantization, and enhancing the output debugging for better clarity. Below are the detailed steps of the process.
 
 ---
 
-## 1. Refactor Quantization Logic **(DONE)**
+# Final Project:
 
-- **Task Description**:  
-  Unified the quantization logic by removing separate cases for `INT8` and `INT16`. Instead, we introduced a more flexible quantization method with a general "INT" type that takes `cntrSize` as a parameter. This allows quantization for both INT8 and INT16 based on the value of `cntrSize`.
 
-- **Benefit**:  
-  More flexibility and easier maintenance of quantization code.
+## Task List
 
----
+### 1. **Create a Comparison Table (Done)**
+   - **Objective**: Develop a table to compare the performance of various models during the testing process.
+   - **Metrics Included**:
+     - **Mean**: The average confidence score.
+     - **Standard Deviation**: The spread of confidence scores.
+     - **99% Confidence Interval**: The range within which we can expect the true mean to lie.
+     - **F1 Score**: A weighted average of precision and recall, important for classification tasks.
+   - **Output**: A comprehensive table that summarizes the model's performance for each quantization method.
 
-## 2. Debugging & Validation
-
-- **Task Description**:  
-  We simplified the debugging process by quantizing only the first layer’s weights initially. This allows us to track the impact of quantization on the first layer specifically and better understand the effect on the model output.
-
-  - **Quantization with Distortion**:  
-    Introduce a `delta` parameter to distort the weights slightly (e.g., +- 1%). This will help in understanding the effects of small changes in the model weights.
-
-  - **Simple Models for Debugging**:  
-    We will use simple models with 1-2 layers for debugging purposes, making it easier to track and validate the impact of quantization.
+   **Key Function**: `compare_models`
 
 ---
 
-## 3. Enhance Output Debugging(DONE)
+### 2. **Utilize F2P Code**
+   - **Objective**: Integrate and test the provided F2P (Fully Functioning Parameterized) code in the model quantization and evaluation process.
+   - **Tasks**:
+     - Modify and adapt the F2P code to handle different quantization methods.
+     - Implement various F2P configurations like `F2P_li_h2`, `F2P_lr_h2`, `F2P_sr_h2`, `F2P_si_h2`.
+     - Ensure smooth operation and correct application during model evaluation.
 
-- **Task Description**:  
-  To enhance the debugging process, we will print important interim values, especially focusing on the outputs of the first layer when it is quantized. Additionally, we will structure the code to print only relevant and concise details. For example, instead of printing the entire output, we’ll focus on printing the key information such as:
-
-  - `Idx: 347, Prob: 0.13%`
-
-- **Benefit**:  
-  This makes the output more readable and helps focus on key metrics during debugging.
-
----
-
-## 4. Implementing `testQuantization()`
-
-- **Task Description**:  
-  Ensure that the `testQuantization()` function in `Quantizer.py` is clean and easy to understand. This function should print relevant results to the screen or to a file based on a debug flag. Additionally, it will check a few initial indices of the weights’ vector to assess how quantization is affecting the weights.
-
-- **Benefit**:  
-  Clear and efficient testing of quantization effects.
+   **Key Function**: `quantize_model_switch`
 
 ---
 
-## 5. Pull Updates from GitHub **(DONE)**
-
-- **Task Description**:  
-  Make sure to pull the latest version of `Quantizer.py` from GitHub to incorporate recent fixes and updates. This ensures that you are working with the most recent changes, which may have an impact on your tests and implementation.
-
-- **Benefit**:  
-  Keeps the project up-to-date with the latest improvements and bug fixes.
-
----
-
-## 6. General Advice for Debugging(DONE)
-
-- **Task Description**:  
-  Work methodically and break down your debugging process step by step. Focus on printing only the most relevant information, which will help in understanding how the quantization is affecting the weights and model outputs. Avoid cluttering the logs with unnecessary details.
-
-- **Benefit**:  
-  More efficient and focused debugging process.
+### 3. **Work on Tests (e.g., fp_2)**
+   - **Objective**: Design and implement test cases to validate functionality and accuracy of the model evaluation pipeline.
+   - **Tasks**:
+     - Develop test cases for various quantization methods to ensure correctness.
+     - Verify the expected outputs for different models and quantization settings.
+     - Handle edge cases such as empty datasets or missing labels.
+   
+   **Key Concepts**: Unit tests, integration tests, edge case handling.
 
 ---
 
-## 7. F2P: Implement the Variant Type of F2P(DONE)
+### 4. **Understand the Outputs**
+   - **Objective**: Analyze the behavior of the system and model outputs at different stages.
+   - **Tasks**:
+     - **System Behavior**: Analyze the behavior of the system at each step to detect patterns, anomalies, or any unexpected behavior.
+     - **Single Layer Output**: Study the output of a simplified single-layer model or analyze the first layer in multi-layer models to understand its contributions.
 
-- **Task Description**:  
-  Implement a variant type of the `F2P` quantization technique. This will involve ensuring that different `F2P` variants are correctly handled by the quantizer and incorporated into the quantization process.
-
-- **Benefit**:  
-  Adds flexibility to the quantization process and improves the robustness of the system.
-
----
-
-## 8. FIX THE WRITING TO FILE
----
-
-## Conclusion
-
-By following this structured approach, we ensure that the quantization logic is unified, debugging is streamlined, and the quantization process is both flexible and efficient. The next steps involve completing the `F2P` variant and continuing to test and refine the quantization methods.
+   **Key Tools**: Visualization tools like `matplotlib` and `seaborn` for exploring model predictions and system behavior.
 
 ---
 
-**Note**: Tasks marked with **(DONE)** are completed, and you can focus on the remaining tasks to continue improving the quantization process.
+### 5. **Dequantization and Validation**
+   - **Objective**: Dequantize output values and compare them with the original high-precision outputs (FP64).
+   - **Tasks**:
+     - **Dequantization**: Convert the quantized values back to their original numerical form using dequantization methods.
+     - **Validation**:
+       - Measure deviations between the quantized output and the original model’s output using average relative error and maximum relative error.
+       - Conduct a thorough review of results using text files for manual inspection.
+
+   **Key Functions**: `dequantize_model`, `calculate_error_metrics`
+
+---
