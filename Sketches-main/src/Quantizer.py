@@ -391,6 +391,7 @@ def plotGrids(
         upperBnd = 0
     for mode in modes:
         if mode.startswith('FP'):
+            #TODO: Implement the FP case-use this code as a template
             expSize = int(mode.split('_e')[1])
             grid = getAllValsFP(cntrSize=cntrSize, expSize=expSize, verbose=verbose, signed=signed)
             if scale:
@@ -404,6 +405,7 @@ def plotGrids(
                 'grid': grid
             }
         elif mode.startswith('F2P'):
+            #TODO: Implement the F2P case-use this code as a template
             numSettings = getFxpSettings(mode)
             flavor = numSettings['flavor']
             grid = getAllValsFxp(flavor=flavor, cntrSize=cntrSize, hyperSize=numSettings['hyperSize'], verbose=verbose,

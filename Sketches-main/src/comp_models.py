@@ -262,7 +262,7 @@ def predict_image(model, image_path, device='cpu') -> tuple:
 
     class_index = torch.argmax(probabilities).item()
 
-    with open("../../../../Desktop/final-project-main-2/Sketches-main/src/imagenet_class_index.json") as labels_file:
+    with open(r"C:\Users\97253\OneDrive\שולחן העבודה\final project\Sketches-main\src\imagenet_class_index.json") as labels_file:
         labels = json.load(labels_file)
 
     label = labels[str(class_index)]
@@ -525,7 +525,7 @@ def main():
     Main execution function
     """
     # Set your images path here
-    images_path = r"../../../../Desktop/final-project-main-2/100 animals"  # Update this path
+    images_path = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\100 animals"  # Update this path
 
     if not os.path.exists(images_path):
         raise FileNotFoundError(f"Path {images_path} does not exist")
