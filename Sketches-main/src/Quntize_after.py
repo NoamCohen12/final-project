@@ -49,7 +49,7 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # נרמול
 ])
 input_tensor = transform(image).unsqueeze(0)  # הוספת מימד Batch
-input_tensor = gen_some_vec ()
+
 # 5. העברת התמונה דרך השכבה הראשונה
 with torch.no_grad():
     output_tensor = quntizer_layer(input_tensor)
