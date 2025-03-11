@@ -140,12 +140,6 @@ def calcErr(
                     (orgVec[i] - changedVec[i]) / orgVec[i]) ** 2
         idxInweightedRelMseVec += 1
 
-    if VERBOSE_LOG in verbose:
-        printf(logFile, f'// mode={mode}\n')
-        for i in range(10):
-            printf(logFile,
-                   f'i={i}, org={orgVec[i]}, changed={changedVec[i]}, PDF={scipy.stats.norm(0, stdev).pdf(orgVec[i])}, weightedAbsMse={weightedAbsMseVec[i]}\n')
-
     resRecord['avgWeightedAbsMse'] = np.mean(weightedAbsMseVec)
     resRecord['avgWeightedRelMse'] = np.mean(weightedRelMseVec)
     if recordErrVecs:
@@ -191,14 +185,26 @@ def quantize(
         if lowerBnd == None or upperBnd == None:
             error('In Quantizer.quantize(). Clamp where requested, but lowerBnd or upperBnd was not specified.')
         vec = clamp(vec, lowerBnd, upperBnd)
-    scale = (max(vec) - min(vec)) / (max(grid) - min(grid))
+    try:
+        scale = (np.max(vec) - np.min(vec)) / (np.max(grid) - np.min(grid))
+    except OverflowError:
+        error(f'OF occurred. max(vec)={max(vec)}, min(vec)={min(vec)}, max(grid)={max(grid)}, min(grid)={min(grid)}')
+    except Exception as e:  # Catch other potential exceptions (e.g., if input is not numeric)
+        error(f"An unexpected error occurred: {e}")
+
     if useAsymmetricQuant:
         if min(grid) != 0:
             error('In Quantizeer.quant(). Asymmetric quantization is supported only for unsigned grid.')
         error('In Quantizeer.quant(). Sorry, but asymmetric quantization is currently not supported')
     else:
         z = 0
-    scaledVec = vec / scale + z  # The vector after scaling and clamping (still w/o rounding)
+    try:
+        scaledVec = vec / scale + z  # The vector after scaling and clamping (still w/o rounding)
+    except OverflowError:
+        error(f'OF occurred. scale={scale}, max(vec)={max(vec)}, min(vec)={min(vec)}\ngrid={grid}')
+    except Exception as e:  # Catch other potential exceptions (e.g., if input is not numeric)
+        error(f"An unexpected error occurred: {e}")
+
     if str(grid.dtype).startswith('int'):
         return [scaledVec.astype('int'), scale, z]
     grid = np.sort(grid)
@@ -247,7 +253,7 @@ def genRandVec2Quantize(
     """
     if dist == 'uniform':
         vec = [(lowerBnd + i * (upperBnd - lowerBnd) / (vec2quantLen - 1)) for i in
-               range(vec2quantLen)]  # $$$ change to np-style to boost perf'
+               range(vec2quantLen)]  # change to np-style to boost perf'
     elif dist == 'norm':
         rng = np.random.default_rng(SEED)
         vec = np.sort(rng.standard_normal(vec2quantLen) * stdev)
@@ -285,10 +291,15 @@ def calcQuantRoundErr(
         outputFileName = genRndErrFileName(cntrSize)
         pclOutputFile = open(f'../res/pcl_files/{outputFileName}.pcl', 'ab+')
 
+    if VERBOSE_DEBUG in verbose:
+        debugFile = open('../res/debug.txt', 'a+')
+    else:
+        debugFile = None
+
     resRecords = []
     for mode in modes:
-        if VERBOSE_DEBUG in verbose:
-            debugFile = open('../res/debug.txt', 'a+')
+
+        if debugFile != None:
             printf(debugFile, f'// mode={mode}\n')
         if mode.startswith('FP'):
             expSize = int(mode.split('_e')[1])
@@ -311,21 +322,29 @@ def calcQuantRoundErr(
         elif mode.startswith('SEAD_stat'):
             expSize = int(mode.split('_e')[1].split('_')[0])
             myCntrMaster = SEAD_stat.CntrMaster(cntrSize=cntrSize, expSize=expSize, verbose=verbose)
-            grid = myCntrMaster.getAllVals()
+            grid = myCntrMaster.getAllVals(signed=signed)
 
         elif mode.startswith('SEAD_dyn'):
             myCntrMaster = SEAD_dyn.CntrMaster(cntrSize=cntrSize, verbose=verbose)
-            grid = myCntrMaster.getAllVals()
+            grid = myCntrMaster.getAllVals(signed=signed)
 
         else:
             print(f'In Quantizer.calcQuantRoundErr(). Sorry, the requested mode {mode} is not supported.')
             continue
 
+        if logFile != None:
+            printf(logFile, f'// mode={mode}\ngrid={grid}\n')
+            continue
+
+        if logFile != None:
+            return
+
         [quantizedVec, scale, z] = quantize(vec=vec2quantize, grid=grid)
         dequantizedVec = dequantize(vec=quantizedVec, scale=scale, z=z)
 
         # Analyze the results of this experiment and insert them into resRecord
-        if VERBOSE_DEBUG in verbose:
+        if debugFile != None:
+            printf(debugFile, f'// mode={mode}\n')
             VEC_LEN = 1000
             printf(debugFile,
                    f'grid={grid}\nmax(vec2quantize)={max(vec2quantize)}\nmax(dequantizedVec)={max(dequantizedVec)}\n')
@@ -334,9 +353,8 @@ def calcQuantRoundErr(
                 warning('I cannot measure the relative error, as some elecments of the vector to quantizer equal 0.')
             else:
                 diff = np.absolute(np.divide(vec2quantize - dequantizedVec, vec2quantize))
-                if debugFile != None:
-                    printf(debugFile, 'max rel quant err={:.3f}, avg rel quant err={:.3f}\n'.format(np.max(diff),
-                                                                                                    np.average(diff)))
+                printf(debugFile,
+                       'max rel quant err={:.3f}, avg rel quant err={:.3f}\n'.format(np.max(diff), np.average(diff)))
             exit()
         resRecord = calcErr(
             orgVec=vec2quantize,
@@ -391,7 +409,6 @@ def plotGrids(
         upperBnd = 0
     for mode in modes:
         if mode.startswith('FP'):
-            #TODO: Implement the FP case-use this code as a template
             expSize = int(mode.split('_e')[1])
             grid = getAllValsFP(cntrSize=cntrSize, expSize=expSize, verbose=verbose, signed=signed)
             if scale:
@@ -405,7 +422,6 @@ def plotGrids(
                 'grid': grid
             }
         elif mode.startswith('F2P'):
-            #TODO: Implement the F2P case-use this code as a template
             numSettings = getFxpSettings(mode)
             flavor = numSettings['flavor']
             grid = getAllValsFxp(flavor=flavor, cntrSize=cntrSize, hyperSize=numSettings['hyperSize'], verbose=verbose,
@@ -514,17 +530,16 @@ def testQuantOfSingleVec(
     """
     Test the quantization of a single vector and print the results as requested by verbose.
     """
-    if debugFile != None:
-        printf(debugFile, f'vec2quantize={vec2quantize}\n')
+    vec2quantize = np.array(vec2quantize)
     [quantizedVec, scale, z] = quantize(vec=vec2quantize, grid=grid, verbose=verbose,
                                         debugFile=None)  # Call with debugFile to throttle additional writes to debugFile, which make it too detailed and undreadable.
     dequantizedVec = dequantize(quantizedVec, scale, z)
 
     if debugFile != None:
         printf(debugFile,
-               f'grid={grid}\nquantizedVec={quantizedVec}\nscale={scale}, z={z}\ndequantizedVec={dequantizedVec}\n')
+               f'grid={grid}\nvec2quantize={vec2quantize}\nquantizedVec={quantizedVec}\nscale={scale}, z={z}\ndequantizedVec={dequantizedVec}\n')
     if any(vec2quantize == 0):
-        warning('I cannot measure the relative error, as some elecments of the vector to quantizer equal 0.')
+        printf(debugFile, f'Cannot measure the relative error, as some elements of the vector to quantizer equal 0.\n')
     else:
         diff = np.absolute(np.divide(vec2quantize - dequantizedVec, vec2quantize))
         if debugFile != None:
@@ -548,24 +563,30 @@ def testQuantization(
     """
     Basic test of the quantization
     """
-    vec2quantize = 2 * np.random.rand(vecLen) - 1
+    # vec2quantize=[-100., 0., 0.00001, 0.00002, 100.]
+    vec2quantize = [-0.305, -0.294, -0.257, -0.174, -0.118, -0.104, 0.057, 0.081, 0.11, 0.184]
+
+    # 2 * np.random.rand(vecLen) - 1
     cntrSize = 8
     if VERBOSE_DEBUG in verbose or VERBOSE_DEBUG_DETAILS in verbose:
         debugFile = open('../res/debug.txt', 'w')
     else:
         debugFile = None
 
-    # grid = np.array (range(-2**(cntrSize-1)+1, 2**(cntrSize-1), 1), dtype='int')
+    grid=np.array(range(-2 ** (cntrSize - 1)+1, 2 ** (cntrSize - 1), 1), dtype='int')
+    [quantizedVec, scale, z] = quantize(vec=vec2quantize, grid=grid)
+    dequantizedVec = dequantize(quantizedVec, scale, z)
     # testQuantOfSingleVec(vec2quantize=vec2quantize, grid=grid, verbose=verbose, debugFile=debugFile)
-    fxpSettingStr = 'F3P_sr_h1'
-    if VERBOSE_DEBUG in verbose or VERBOSE_DEBUG_DETAILS in verbose:
-        printf(debugFile, f'// {fxpSettingStr}\n')
-    grid = getAllValsFxp(
-        fxpSettingStr=fxpSettingStr,
-        cntrSize=cntrSize,
-        verbose=[],
-        signed=True
-    )
+   # fxpSettingStr = 'F2P_li_h2'  # 'F3P_sr_h1'
+   # if VERBOSE_DEBUG in verbose or VERBOSE_DEBUG_DETAILS in verbose:
+    #    printf(debugFile, f'// {fxpSettingStr}\n')
+   # grid = getAllValsFxp(
+    #    fxpSettingStr=fxpSettingStr,
+     #   cntrSize=cntrSize,
+      #  verbose=[],
+     #   signed=False
+    #)
+    print("grid:",grid)
     testQuantOfSingleVec(vec2quantize=vec2quantize, grid=grid, verbose=verbose, debugFile=debugFile)
     if debugFile != None:
         debugFile.close()
@@ -573,7 +594,7 @@ def testQuantization(
 
 if __name__ == '__main__':
     try:
-        testQuantization(verbose=[VERBOSE_DEBUG], vecLen=1000)
+        testQuantization(verbose=[VERBOSE_DEBUG_DETAILS], vecLen=1000)
         # runCalcQuantRoundErr ()
         # plotGrids (zoomXlim=None, cntrSize=7, modes=['F2P_li_h2', 'F2P_si_h2', 'FP_e5', 'FP_e2', 'int'], scale=False)
 

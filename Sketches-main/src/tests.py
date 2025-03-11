@@ -10,7 +10,7 @@ def testQuantization(
     Basic test of the quantization
     """
     print("\ntestQuantization")
-    vec2quantize = np.array([-0.08, -0.01, 0.08, 0.05])
+    vec2quantize = np.array([-0.305 ,-0.294 ,-0.257 ,-0.174 ,-0.118 ,-0.104 , 0.057 , 0.081 , 0.11  , 0.184])
     cntrSize = 8
     if VERBOSE_PRINT_SCREEN in verbose:
         print(f'vec2quantize={vec2quantize}\n')
@@ -19,7 +19,7 @@ def testQuantization(
         printf(debugFile, f'vec2quantize={vec2quantize}')
 
     # Test signed int grid
-    grid = np.array(range(-2 ** (cntrSize - 1) + 1, 2 ** (cntrSize - 1), 1), dtype='int')
+    grid = np.array(range(0, 2 ** (cntrSize - 1), 1), dtype='int')
     [quantizedVec, scale, z] = quantize(vec=vec2quantize, grid=grid)
     dequantizedVec = dequantize(quantizedVec, scale, z)
     if VERBOSE_PRINT_SCREEN in verbose:
