@@ -32,11 +32,13 @@ assert not np.isnan(weights_np).any(), "Error: Found NaN in model weights!"
 assert not np.isinf(weights_np).any(), "Error: Found Inf in model weights!"
 
 # יצירת רשת קוונטיזציה (גריד) עם 256 ערכים (לדוגמה, 8 ביט)
-grid = quantizationItamar.generate_grid(16, signed=False)
+grid = quantizationItamar.generate_grid(8, signed=False)
 
 # בדיקה שהגריד לא ריק
 assert len(grid) > 1, "Error: Quantization grid is empty or too small!"
-
+print("-----------------------")
+Quantizer.testQuantization(10,[2])
+print("-----------------------")
 # הדפסות לבדיקת ערכים
 print(f"Original Weights:\n{np.sort(weights_np)}")  # השתמש ב- numpy.sort()
 print(f"Quantization Grid - Max: {np.max(grid)}, Min: {np.min(grid)}")
@@ -75,3 +77,6 @@ print(f"Original Output: {original_output}")
 print(f"Quantized Output: {quantized_output}")
 
 print("All tests passed successfully! ✅")
+
+
+
