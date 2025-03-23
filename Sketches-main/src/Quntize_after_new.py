@@ -5,6 +5,63 @@ import Quantizer
 import quantizationItamar
 
 
+def quantize(
+        vec: np.array,  # Vector to quantize
+        grid: np.array,  # Quantization grid (signed)
+        clamp_outliers: bool = False,  # Clamp outliers flag
+        lower_bnd: float = None,  # Lower bound for clamping
+        upper_bnd: float = None,  # Upper bound for clamping
+        verbose: list = []  # Verbose output
+) -> tuple:  # Returns (quantized_vector, scale)
+    """
+    Quantize an input vector using symmetric min-max quantization with a signed grid.
+
+    Steps:
+    1. Optional clamping if requested
+    2. Calculate scale factor based on input range and grid range
+    3. Scale the vector
+    4. Find nearest grid values for each element
+    5. Return quantized vector and scale factor
+    """
+    grid = np.array(grid)
+    vec = np.array(vec)
+
+    # Verify we have a signed grid
+    if np.min(grid) >= 0:
+        raise ValueError("Grid must be signed (contain negative values)")
+
+    # Optional clamping
+    if clamp_outliers:
+        if lower_bnd is None or upper_bnd is None:
+            raise ValueError("Clamping requested but bounds not specified")
+        vec = np.clip(vec, lower_bnd, upper_bnd)
+
+    # For symmetric quantization with signed grid, use the max absolute value
+    abs_max_vec = np.max(np.abs(vec))
+    abs_max_grid = np.max(np.abs(grid))
+
+    try:
+        # Symmetric scaling factor
+        scale = abs_max_vec / abs_max_grid
+        if scale == 0 or not np.isfinite(scale):
+            scale = 1.0
+    except Exception as e:
+        raise ValueError(f"Error calculating scale: {e}")
+
+    # Scale the vector (symmetric around zero)
+    scaled_vec = vec / scale
+
+    # For integer grids, we could just cast to int, but better to find nearest
+    quantized_vec = np.zeros_like(vec)
+    for i, val in enumerate(scaled_vec):
+        # Find index of nearest grid value
+        idx = np.argmin(np.abs(grid - val))
+        quantized_vec[i] = grid[idx]
+
+    return quantized_vec, scale, 0  # Zero-point is always 0 for symmetric quantization
+
+
+
 # יצירת המודל
 class SimpleModel(nn.Module):
     def __init__(self):
@@ -15,68 +72,62 @@ class SimpleModel(nn.Module):
         return self.fc(x)
 
 
-# יצירת אובייקט מודל
+# 1. Create model, input, calculate original output (keep this part the same)
 model = SimpleModel()
-
-# יצירת קלט אקראי
 X = torch.randn(1, 10)
-
-# חישוב הפלט מהמודל המקורי
 original_output = model(X).item()
 
-# קבלת המשקלים של השכבה כ-numpy array
+# 2. Generate quantization grid
+grid = quantizationItamar.generate_grid(8, signed=True)
+
+# 3. Get original shape BEFORE flattening (MOVE THIS LINE UP!)
+original_shape = model.fc.weight.data.shape
+
+# 4. Get weights and flatten them
 weights_np = model.fc.weight.data.numpy().flatten()
 
-# בדיקות תקינות למשקלים לפני קוונטיזציה
+# 5. Run tests and validation checks (keep this part the same)
+Quantizer.testQuantOfSingleVec(vec2quantize=weights_np, grid=grid, verbose=[2])
+print("-------------------------------------------------------------------")
 assert not np.isnan(weights_np).any(), "Error: Found NaN in model weights!"
 assert not np.isinf(weights_np).any(), "Error: Found Inf in model weights!"
-
-# יצירת רשת קוונטיזציה (גריד) עם 256 ערכים (לדוגמה, 8 ביט)
-grid = quantizationItamar.generate_grid(8, signed=False)
-
-# בדיקה שהגריד לא ריק
 assert len(grid) > 1, "Error: Quantization grid is empty or too small!"
-print("-----------------------")
-Quantizer.testQuantization(10,[2])
-print("-----------------------")
-# הדפסות לבדיקת ערכים
-print(f"Original Weights:\n{np.sort(weights_np)}")  # השתמש ב- numpy.sort()
+print(f"Original Weights:\n{np.sort(weights_np)}")
 print(f"Quantization Grid - Max: {np.max(grid)}, Min: {np.min(grid)}")
 
-# ביצוע קוונטיזציה למשקלים
+# 6. Perform quantization
 try:
-    quantized_weights, scale_factor, zero_point = Quantizer.quantize(weights_np, grid=grid)
+    quantized_weights, scale_factor, zero_point = quantize(weights_np, grid=grid)
 except Exception as e:
     print(f"Error in quantization: {e}")
     exit()
 
+# 7. Add debugging prints to understand quantization error
 print(f"Scale Factor: {scale_factor}")
 print(f"Max weights_np: {np.max(weights_np)}, Min weights_np: {np.min(weights_np)}")
-print(f"quantized_weights:{quantized_weights}")
+print(f"Original weights (first 5): {weights_np[:5]}")
+print(f"Quantized weights (first 5): {quantized_weights[:5]}")
+print(f"Reconstructed weights (first 5): {quantized_weights[:5] * scale_factor}")
+print(f"Quantization error: {np.mean(np.abs(weights_np - quantized_weights * scale_factor))}")
 
-# בדיקות תקינות אחרי קוונטיזציה
+# 8. Validation checks
 assert np.all(quantized_weights >= np.min(grid)), "Error: Some quantized weights are below the allowed grid range!"
 assert np.all(quantized_weights <= np.max(grid)), "Error: Some quantized weights exceed the allowed grid range!"
+print(f"Quantized Weights:\n{np.sort(quantized_weights)}")
 
-# הדפסה לבדיקה
-print(f"Quantized Weights:\n{np.sort(quantized_weights)}")  # השתמש ב- numpy.sort()
-print(f"Scale Factor: {scale_factor}")
+# 9. IMPORTANT: Apply dequantization before reshaping and assigning back
+# The weights need to be scaled back by the scale_factor
+dequantized_weights = quantized_weights * scale_factor
 
-# עדכון המשקלים במודל לאחר קוונטיזציה
-model.fc.weight.data = torch.tensor(quantized_weights, dtype=torch.float32)
+# 10. Reshape and assign back to model
+model.fc.weight.data = torch.tensor(dequantized_weights.reshape(original_shape), dtype=torch.float32)
 
-# חישוב הפלט מהמודל לאחר קוונטיזציה
+# 11. Test and validate (keep this part the same)
 quantized_output = model(X).item()
-
-# בדיקה שהתוצאה אחרי קוונטיזציה לא רחוקה מדי מהתוצאה המקורית
-assert abs(original_output - quantized_output) < abs(
-    original_output) * 0.5, "Error: Quantized output is too far from original output!"
-
-# הצגת התוצאות
 print(f"Original Output: {original_output}")
 print(f"Quantized Output: {quantized_output}")
+print(f"Output difference: {abs(original_output - quantized_output)}")
 
+# 12. Possibly relax this assertion or add a relative error check
+assert abs(original_output - quantized_output) < abs(original_output) * 0.5, "Error: Quantized output is too far from original output!"
 print("All tests passed successfully! ✅")
-
-
-
