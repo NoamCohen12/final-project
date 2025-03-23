@@ -553,7 +553,7 @@ def testQuantOfSingleVec(
                                                                                                           np.average(
                                                                                                               diff)))
         if VERBOSE_PRINT_SCREEN in verbose:
-            print(f'quantizedVec={quantizedVec}, scale={scale}, z={z}\ndequantizedVec={dequantizedVec}')
+            print(f'quantizedVec={np.sort(quantizedVec)}, scale={scale}, z={z}\ndequantizedVec={np.sort(dequantizedVec)}')
 
 
 def testQuantization(
