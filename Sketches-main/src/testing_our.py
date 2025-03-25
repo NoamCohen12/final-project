@@ -8,7 +8,6 @@ def quantize(
         clamp_outliers: bool = False,  # Clamp outliers flag
         lower_bnd: float = None,  # Lower bound for clamping
         upper_bnd: float = None,  # Upper bound for clamping
-        verbose: list = []  # Verbose output
 ) -> tuple:  # Returns (quantized_vector, scale)
     """
     Quantize an input vector using symmetric min-max quantization with a signed grid.
