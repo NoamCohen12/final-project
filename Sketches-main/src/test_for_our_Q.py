@@ -3,6 +3,7 @@ import quantizationItamar
 import Quantizer
 import testing_our
 
+
 # we create vector of vectors for testing the quantisation
 
 # 10 simple vectors
@@ -150,20 +151,6 @@ vectors = {
 }
 
 
-def quantize_MRL(vec, grid):
-
-    grid = np.sort(grid)  # מוודא שה-grid מסודר
-
-    # מציאת הערך הקרוב ביותר מכל איבר ב-vec אל הערכים ב-grid
-    q = np.array([grid[np.argmin(np.abs(grid - v))] for v in vec])
-
-    # חישוב scale לפי ההפרש הממוצע בין ערכים סמוכים ב-grid
-    scale = np.min(np.diff(grid)) if len(grid) > 1 else 1  # אם יש רק ערך אחד ב-grid, scale יהיה 1
-
-    # נקודת אפס (zero point) נבחרת כערך הכי קרוב ל-0 בתוך ה-grid
-    zero_point = grid[np.argmin(np.abs(grid))]
-
-    return q, scale, zero_point
 
 
 def print_vector(name, vec):
@@ -175,7 +162,8 @@ def print_vector(name, vec):
         print(f"{name}: {vec}")
 
 
-def test(func, vec2quantize, grid):
+def test(func, vec2quantize, grid,vec_name):
+    print(f"Testing {vec_name}")
     print_vector("Vector original", vec2quantize)
 
     print(f"Grid: {grid[:10]} ... {grid[-10:]}")
@@ -192,13 +180,30 @@ def test(func, vec2quantize, grid):
 
     print_vector("Dequantized vector", dequantized_vec)
 
+    # Calculate average absolute error between original and dequantized vector
+    avg_abs_error = np.mean(np.abs(vec2quantize - dequantized_vec))
+
+    # Calculate average relative error
+    #for avoiding division by zero
+    safe_vec2quantize = np.where(vec2quantize == 0, 1e-10, vec2quantize)
+
+    avg_rel_error = np.mean(np.abs((vec2quantize - dequantized_vec) / safe_vec2quantize)) * 100
+    print(f"Average Absolute Error: {avg_abs_error}")
+    print(f"Average Relative Error (%): {avg_rel_error}")
+
     print("---------------------------------------------------------------------------")
 
 
 if __name__ == '__main__':
     func1 = Quantizer.quantize
     func2 = testing_our.quantize
-    func3 = quantize_MRL
-    grid = quantizationItamar.generate_grid(8, True)
-    for vec in vectors:
-        test(func2, vectors[vec], grid)
+    grid1 = quantizationItamar.generate_grid(8, True)
+    flavor ="F2P_li_h2"
+    grid2 = Quantizer.getAllValsFxp(
+        fxpSettingStr=flavor,
+        cntrSize=8,
+        verbose=[],
+        signed=True
+    )
+    for vec_name, vec_data in vectors.items():
+        test(func1, vec_data, grid2, vec_name)
