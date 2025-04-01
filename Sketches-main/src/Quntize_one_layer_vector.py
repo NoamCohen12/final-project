@@ -71,69 +71,10 @@ class SimpleModel(nn.Module):
         return self.fc(x)
 
 
-if __name__ == '__main__':
-    # 1. Create model, input, calculate original output (keep this part the same)
-    model = SimpleModel(output_size=30)
-    X_array = np.array([0.656565, 2, 1000, -4, -0.5, 6.11, 7, 8, -1000, 0.45])
-    X = torch.tensor(X_array, dtype=torch.float32)
-    print(f"original x:{X}")
-    original_output = model(X).tolist()
-    original_output = np.array(original_output)
-
-
-    # 2. Generate quantization grid
-    grid = quantizationItamar.generate_grid(8, signed=True)
-
-    flavor = "F2P_li_h2"
-    grid2 = Quantizer.getAllValsFxp(
-        fxpSettingStr=flavor,
-        cntrSize=16,
-        verbose=[],
-        signed=True
-    )
-    # 3. Get original shape BEFORE flattening (MOVE THIS LINE UP!)
-    original_shape = model.fc.weight.data.shape
-
-    # 4. Get weights and flatten them
-    weights_np = model.fc.weight.data.numpy().flatten()
-
-    # 5. Run tests and validation checks (keep this part the same)
-    print(f"Original Weights:\n{np.sort(weights_np)}")
-    Quantizer.testQuantOfSingleVec(vec2quantize=weights_np, grid=grid, verbose=[2])
-    print("-------------------------------------------------------------------")
-    assert not np.isnan(weights_np).any(), "Error: Found NaN in model weights!"
-    assert not np.isinf(weights_np).any(), "Error: Found Inf in model weights!"
-    assert len(grid) > 1, "Error: Quantization grid is empty or too small!"
-    print(f"Quantization Grid - Max: {np.max(grid)}, Min: {np.min(grid)}")
-
-    # 6. Perform quantization
-    quantized_weights, scale_factor, zero_point = quantize(weights_np, grid=grid)
-
-    # 8. Validation checks
-    assert np.all(quantized_weights >= np.min(grid)), "Error: Some quantized weights are below the allowed grid range!"
-    assert np.all(quantized_weights <= np.max(grid)), "Error: Some quantized weights exceed the allowed grid range!"
-    print(f"Quantized Weights:\n{np.sort(quantized_weights)}")
-
-    # 10. Reshape and assign back to model
-    model.fc.weight.data = torch.tensor(quantized_weights.reshape(original_shape))
-    X_np = X.numpy().flatten()  # Flatten the input tensor
-
-    X_Q, scale_factor_X, zero_point_X = quantize(X_np, grid=grid)
-    X_Q_tensor = torch.tensor(X_Q).reshape(X.shape)  # Reshape back to original input shape
-
-    # 11. Test and validate (keep this part the same)
-    quantized_output = model(X_Q_tensor).tolist()
-    quantized_output = np.array(quantized_output)  # Convert to numpy array for element-wise operations
-
-
-
-    Dquantized_output = quantized_output * scale_factor * scale_factor_X
-    Dquantized_output = np.array(Dquantized_output)
-
+def print_stats(original_output, quantized_output, Dquantized_output):
     print(f"Original Output: {np.sort(original_output)}")
     print(f"Quantized Output: {np.sort(quantized_output)}")
     print(f"Dequantized Output: {np.sort(Dquantized_output)}")
-
 
     # Absolute difference for each element
     diff = np.abs(original_output - Dquantized_output)
@@ -147,7 +88,6 @@ if __name__ == '__main__':
     # 3. Relative error for each element
     relative_error = np.abs(diff / original_output)  # Computing relative error
 
-
     # 4. Mean absolute error
     mean_error = np.mean(diff)
 
@@ -157,3 +97,61 @@ if __name__ == '__main__':
     print(f"🔹 Relative error (for each element): {relative_error}")
     print(f"🔹 Mean relative error: {np.mean(relative_error)}")
     print(f"🔹 Mean absolute error: {mean_error}")
+
+
+def test_quantization(grid_type="int", cntr_size=14, X_array=None, verbose=[]):
+    torch.manual_seed(42)
+    np.random.seed(42)
+    model = SimpleModel(output_size=15)
+    X = torch.tensor(X_array, dtype=torch.float32)
+
+    original_output = np.array(model(X).tolist())
+    print("original_output:", np.sort(original_output))
+
+    if grid_type.startswith("int"):
+        grid = quantizationItamar.generate_grid(cntr_size, signed=True)
+    elif grid_type.startswith("F2P"):
+        grid = Quantizer.getAllValsFxp(fxpSettingStr=grid_type, cntrSize=cntr_size, verbose=[], signed=True)
+    else:
+        raise ValueError("Invalid grid_type. Choose 'int' or 'F2P'")
+
+    original_shape = model.fc.weight.data.shape
+    weights_np = model.fc.weight.data.numpy().flatten()
+
+    if 0 in verbose:
+        print(f"Original Weights: {weights_np[:10]}........{weights_np[-10:]}")
+        Quantizer.testQuantOfSingleVec(vec2quantize=weights_np, grid=grid, verbose=[2])
+
+    quantized_weights, scale_factor, zero_point = quantize(weights_np, grid=grid)
+
+    model.fc.weight.data = torch.tensor(quantized_weights.reshape(original_shape))
+
+    if 3 in verbose:
+        lower_bnd, upper_bnd = np.percentile(X, 1), np.percentile(X, 99)
+        X_Q, scale_factor_X, zero_point_X = quantize(X, grid, clamp_outliers=True,
+                                                               lower_bnd=lower_bnd, upper_bnd=upper_bnd)
+    else:
+        X_Q, scale_factor_X, zero_point_X = quantize(X.numpy().flatten(), grid=grid)
+
+    X_Q_tensor = torch.tensor(X_Q).reshape(X.shape)
+
+    quantized_output = np.array(model(X_Q_tensor).tolist())
+    Dquantized_output = quantized_output *scale_factor * scale_factor_X
+
+    print_stats(original_output, quantized_output, Dquantized_output)
+
+
+if __name__ == '__main__':
+    X_array = np.array([0.656565, 2, 1000, -4, -0.5, 6.11, 7, 8, -1000, 0.45])
+
+    list_of_grid_types = ["int", "F2P_lr_h2", "F2P_sr_h2", "F2P_si_h2", "F2P_li_h2"]
+    list_cntSize = [8, 10, 12, 14, 16]
+    list_verbose = [0, 3]
+    # Example usage:
+    for grid_type in list_of_grid_types:
+        for cntr_size in list_cntSize:
+            for verbose in list_verbose:
+                print(
+                    f"Testing grid: {grid_type}, counter size: {cntr_size}, verbose: {'clamp' if verbose == 3 else 'without clamp'}")
+                test_quantization(grid_type=grid_type, cntr_size=cntr_size, X_array=X_array, verbose=[0,verbose])
+                print("--------------------------------------------------")
