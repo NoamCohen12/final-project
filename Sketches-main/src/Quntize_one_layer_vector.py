@@ -3,6 +3,8 @@ import torch.nn as nn
 import numpy as np
 import Quantizer
 import quantizationItamar
+import matplotlib.pyplot as plt
+import pandas as pd
 
 
 def quantize(
@@ -72,9 +74,9 @@ class SimpleModel(nn.Module):
 
 
 def print_stats(original_output, quantized_output, Dquantized_output):
-    print(f"Original Output: {np.sort(original_output)}")
-    print(f"Quantized Output: {np.sort(quantized_output)}")
-    print(f"Dequantized Output: {np.sort(Dquantized_output)}")
+    # print(f"Original Output: {np.sort(original_output)}")
+    # print(f"Quantized Output: {np.sort(quantized_output)}")
+    # print(f"Dequantized Output: {np.sort(Dquantized_output)}")
 
     # Absolute difference for each element
     diff = np.abs(original_output - Dquantized_output)
@@ -92,11 +94,13 @@ def print_stats(original_output, quantized_output, Dquantized_output):
     mean_error = np.mean(diff)
 
     # Display results
-    print(f"🔹 Maximum difference: {max_diff}")
-    print(f"🔹 Minimum difference: {min_diff}")
-    print(f"🔹 Relative error (for each element): {relative_error}")
+    # print(f"🔹 Maximum difference: {max_diff}")
+    # print(f"🔹 Minimum difference: {min_diff}")
+    # print(f"🔹 Relative error (for each element): {relative_error}")
+    # print(f"🔹 Mean absolute error: {mean_error}")
+
     print(f"🔹 Mean relative error: {np.mean(relative_error)}")
-    print(f"🔹 Mean absolute error: {mean_error}")
+    print(f"🔹 Max relative error: {np.max(relative_error)}")
 
 
 def test_quantization(grid_type="int", cntr_size=14, X_array=None, verbose=[]):
@@ -106,7 +110,7 @@ def test_quantization(grid_type="int", cntr_size=14, X_array=None, verbose=[]):
     X = torch.tensor(X_array, dtype=torch.float32)
 
     original_output = np.array(model(X).tolist())
-    print("original_output:", np.sort(original_output))
+    # print("original_output:", np.sort(original_output))
 
     if grid_type.startswith("int"):
         grid = quantizationItamar.generate_grid(cntr_size, signed=True)
@@ -120,25 +124,86 @@ def test_quantization(grid_type="int", cntr_size=14, X_array=None, verbose=[]):
 
     if 0 in verbose:
         print(f"Original Weights: {weights_np[:10]}........{weights_np[-10:]}")
-        Quantizer.testQuantOfSingleVec(vec2quantize=weights_np, grid=grid, verbose=[2])
+        # Quantizer.testQuantOfSingleVec(vec2quantize=weights_np, grid=grid, verbose=[2])
 
     quantized_weights, scale_factor, zero_point = quantize(weights_np, grid=grid)
 
     model.fc.weight.data = torch.tensor(quantized_weights.reshape(original_shape))
 
     if 3 in verbose:
-        lower_bnd, upper_bnd = np.percentile(X, 1), np.percentile(X, 99)
+        lower_bnd, upper_bnd = np.percentile(X, 0.5), np.percentile(X, 0.95)
         X_Q, scale_factor_X, zero_point_X = quantize(X, grid, clamp_outliers=True,
-                                                               lower_bnd=lower_bnd, upper_bnd=upper_bnd)
+                                                     lower_bnd=lower_bnd, upper_bnd=upper_bnd)
     else:
         X_Q, scale_factor_X, zero_point_X = quantize(X.numpy().flatten(), grid=grid)
 
     X_Q_tensor = torch.tensor(X_Q).reshape(X.shape)
 
     quantized_output = np.array(model(X_Q_tensor).tolist())
-    Dquantized_output = quantized_output *scale_factor * scale_factor_X
+    Dquantized_output = quantized_output * scale_factor * scale_factor_X
 
     print_stats(original_output, quantized_output, Dquantized_output)
+
+
+def visual():
+    data = {
+        "grid_type": [
+            "int", "int", "int", "int", "int",
+            "F2P_lr_h2", "F2P_lr_h2", "F2P_lr_h2", "F2P_lr_h2", "F2P_lr_h2",
+            "F2P_sr_h2", "F2P_sr_h2", "F2P_sr_h2", "F2P_sr_h2", "F2P_sr_h2",
+            "F2P_si_h2", "F2P_si_h2", "F2P_si_h2", "F2P_si_h2", "F2P_si_h2",
+            "F2P_li_h2", "F2P_li_h2", "F2P_li_h2", "F2P_li_h2", "F2P_li_h2"
+        ],
+        "bit_width": [
+            8, 10, 12, 14, 16,
+            8, 10, 12, 14, 16,
+            8, 10, 12, 14, 16,
+            8, 10, 12, 14, 16,
+            8, 10, 12, 14, 16
+        ],
+        "mean_relative_error": [
+            0.0118, 0.0018, 0.0017, 0.0013, 0.0013,
+            0.0144, 0.0042, 0.0011, 0.0013, 0.0013,
+            0.0529, 0.0145, 0.0078, 0.0022, 0.0013,
+            0.0528, 0.0144, 0.0078, 0.0023, 0.0013,
+            0.0144, 0.0042, 0.0011, 0.0014, 0.0013
+        ],
+        "max_relative_error": [
+            0.0128, 0.0011, 0.0012, 0.0010, 0.0010,
+            0.06, 0.0022, 0.01, 0.004, 0.003,
+            0.161, 0.045, 0.032, 0.006, 0.002,
+            0.161, 0.045, 0.032, 0.004, 0.002,
+            0.06, 0.0022, 0.01, 0.004, 0.003
+        ]
+    }
+
+    df = pd.DataFrame(data)
+
+    # גרף של שגיאה יחסית ממוצעת
+    plt.figure(figsize=(8, 6))
+    for grid_type in df['grid_type'].unique():
+        sub_df = df[df['grid_type'] == grid_type]
+        plt.plot(sub_df['bit_width'], sub_df['mean_relative_error'], marker='o', label=f'{grid_type} grid')
+    plt.title("Mean Relative Error vs Bit Width")
+    plt.xlabel("Bit Width")
+    plt.ylabel("Mean Relative Error")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    # גרף של שגיאה יחסית מקסימלית
+    plt.figure(figsize=(8, 6))
+    for grid_type in df['grid_type'].unique():
+        sub_df = df[df['grid_type'] == grid_type]
+        plt.plot(sub_df['bit_width'], sub_df['max_relative_error'], marker='o', label=f'{grid_type} grid')
+    plt.title("Max Relative Error vs Bit Width")
+    plt.xlabel("Bit Width")
+    plt.ylabel("Max Relative Error")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
 
 
 if __name__ == '__main__':
@@ -146,12 +211,12 @@ if __name__ == '__main__':
 
     list_of_grid_types = ["int", "F2P_lr_h2", "F2P_sr_h2", "F2P_si_h2", "F2P_li_h2"]
     list_cntSize = [8, 10, 12, 14, 16]
-    list_verbose = [0, 3]
+    list_verbose = [0]
     # Example usage:
     for grid_type in list_of_grid_types:
         for cntr_size in list_cntSize:
             for verbose in list_verbose:
                 print(
                     f"Testing grid: {grid_type}, counter size: {cntr_size}, verbose: {'clamp' if verbose == 3 else 'without clamp'}")
-                test_quantization(grid_type=grid_type, cntr_size=cntr_size, X_array=X_array, verbose=[0,verbose])
+                test_quantization(grid_type=grid_type, cntr_size=cntr_size, X_array=X_array, verbose=[0, verbose])
                 print("--------------------------------------------------")
