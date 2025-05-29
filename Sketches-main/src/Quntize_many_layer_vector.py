@@ -166,7 +166,6 @@ if __name__ == '__main__':
 
     list_of_grid_types = ["int"]
     list_cntSize = [8]
-
     for grid_type in list_of_grid_types:
         for cntr_size in list_cntSize:
             print(f"Testing grid: {grid_type}, counter size: {cntr_size}")
