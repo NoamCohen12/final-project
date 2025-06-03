@@ -4,15 +4,21 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 import numpy as np
+from torchvision.transforms import ToPILImage
+
 import Quantizer
 import quantizationItamar
 from PIL import Image
 import torchvision.transforms as transforms
 
-def save_quantized_weights(model, filename="quantized_weights.pth"):
-    quantized_weights = {name: layer.weight.detach().cpu() for name, layer in model.named_modules() if isinstance(layer, (nn.Linear, nn.Conv2d))}
-    torch.save(quantized_weights, filename)
-    print(f"Quantized weights saved to {filename}")
+def register_nan_hooks(model):
+    def hook_fn(module, input, output):
+        if isinstance(output, torch.Tensor) and torch.isnan(output).any():
+            raise RuntimeError(f"NaN detected after layer: {module}")
+
+    for name, module in model.named_modules():
+        if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear, torch.nn.ReLU, torch.nn.BatchNorm2d)):
+            module.register_forward_hook(hook_fn)
 
 def load_quantized_weights(model, filename="quantized_weights.pth"):
     if os.path.exists(filename):
@@ -26,8 +32,8 @@ def load_quantized_weights(model, filename="quantized_weights.pth"):
 
 
 def test_quantization(model, image_path, grid_type="int", cntr_size=14):
-    torch.manual_seed(42)
-    np.random.seed(42)
+    # torch.manual_seed(42)
+    # np.random.seed(42)
 
     image_tensor = load_and_preprocess_image(image_path)
 
@@ -35,7 +41,6 @@ def test_quantization(model, image_path, grid_type="int", cntr_size=14):
 
     if torch.isnan(image_tensor).any():
         raise ValueError("NaN detected in the input image tensor!")
-
 
     if grid_type.startswith("int"):
         grid = quantizationItamar.generate_grid(cntr_size, signed=True)
@@ -53,34 +58,50 @@ def test_quantization(model, image_path, grid_type="int", cntr_size=14):
 
     print(f"Quantization Grid: min={np.min(grid)}, max={np.max(grid)}")
 
-    weight_file = f"quantized_weights_{grid_type}_{cntr_size}.pth"
-    if os.path.exists(weight_file):
-        load_quantized_weights(model, weight_file)
-    else:
-        scale_factors = quantize_model(model, grid)
-        save_quantized_weights(model, weight_file)
-
     model.eval()
     with torch.no_grad():
         original_output = model(image_tensor).detach().numpy()
 
-    # if np.isnan(original_output).any():
-    #     raise ValueError("NaN detected in model output!")
-
-    print(f"Model Output for {image_path}: {np.sort(original_output)}")
+    # print(f"Model Output for {image_path}: {np.sort(original_output)}")
 
     image_tensor_Q, scale_factor_image_Q, zero_point_image_Q = quantize(image_tensor.numpy().flatten(), grid=grid)
 
     image_tensor_Q = torch.tensor(image_tensor_Q.reshape(image_tensor.shape), dtype=torch.float32,
                                   device=image_tensor.device)
 
-    quantize_output = model(image_tensor_Q).detach().numpy()
+    # ← בדיקה נוספת לוודא שאין NaNs בתמונה המקוונטת
+    if torch.isnan(image_tensor_Q).any():
+        raise ValueError("NaN found in quantized input image_tensor_Q!")
 
-    diquantized_output = quantize_output * scale_factor_image_Q * np.prod(scale_factors)
+    scale_factor_model = quantize_model(model, grid)
 
+    # cast to float64 for safe log/exp computation
+    scale_factor_model = scale_factor_model.astype(np.float64)
+    scale_factor_image_Q = float(scale_factor_image_Q)
+
+    if np.any(scale_factor_model <= 0) or scale_factor_image_Q <= 0:
+        raise ValueError("Scale factors must be strictly positive for logarithmic scaling.")
+
+    log_prod = np.log(scale_factor_image_Q) + np.sum(np.log(scale_factor_model))
+    final_scale = np.exp(log_prod)
+    register_nan_hooks(model)
+
+    quantize_output = model(image_tensor_Q).detach().numpy().astype(np.float64)
+
+    # diquantized_output = quantize_output * final_scale
+
+    print("Quantize output min/max:", np.nanmin(quantize_output), np.nanmax(quantize_output))
+    print("Any NaN in quantize_output:", np.isnan(quantize_output).any())
+    diquantized_output = quantize_output
+
+    print("final scale:", final_scale)
+
+    print("scale_factor_image_Q:", scale_factor_image_Q)
+    print("scale_factor_model:", scale_factor_model)
+    print(f"Final scaling factor: {final_scale}")
     print(f"Dequantized Output: {np.sort(diquantized_output)}")
-
     print("--- End of Test ---\n")
+
 
 def quantize(vec, grid, clamp_outliers=False, lower_bnd=None, upper_bnd=None):
     if not isinstance(vec, np.ndarray):
@@ -99,11 +120,16 @@ def quantize(vec, grid, clamp_outliers=False, lower_bnd=None, upper_bnd=None):
     abs_max_vec = np.max(np.abs(vec))
     abs_max_grid = np.max(np.abs(grid))
 
+    if abs_max_vec == 0:
+        return np.zeros_like(vec), 1.0, 0
     if abs_max_grid == 0:
         raise ValueError("Invalid quantization grid: max absolute value is 0!")
 
-    scale = abs_max_vec / abs_max_grid if abs_max_grid != 0 else 1.0
+    # הגנה נגד scale קטן מדי
+    raw_scale = abs_max_vec / abs_max_grid
+    scale = max(raw_scale, 1e-3)
     scaled_vec = vec / scale
+
 
     quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
 
@@ -126,8 +152,11 @@ def quantize_model(model, grid):
             if np.isnan(quantized_weights).any():
                 raise ValueError(f"NaN detected in quantized weights of {name}!")
 
-            layer.weight.data = torch.tensor(quantized_weights.reshape(layer.weight.shape), dtype=torch.float32,
-                                           )
+            layer.weight.data = torch.tensor(quantized_weights.reshape(layer.weight.shape), dtype=torch.float32)
+
+            # ← הוספת בדיקה לאחר עדכון המשקלים
+            if torch.isnan(layer.weight).any():
+                raise ValueError(f"NaN present in weights of layer '{name}' after quantization!")
 
             scale_factors.append(scale_factor)
 
@@ -160,7 +189,7 @@ def test_model_on_image(model, image_path):
 
 
 if __name__ == '__main__':
-    # image_path = r"C:\Users\97253\OneDrive\שולחן העבודה\final project\Sketches-main\src\5pics\cat.jpeg"
+
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     model.eval()
 
@@ -169,7 +198,7 @@ if __name__ == '__main__':
     for grid_type in list_of_grid_types:
         for cntr_size in list_cntSize:
             print(f"Testing grid: {grid_type}, counter size: {cntr_size}")
-            image_path = r"C:\\Users\\97253\\OneDrive\\שולחן העבודה\\final project\\Sketches-main\\src\\5pics\\cat.jpeg"
+            image_path = r"5pics/dog.jpg"
             test_quantization(model, image_path, grid_type=grid_type, cntr_size=cntr_size)
             print("--------------------------------------------------")
 
