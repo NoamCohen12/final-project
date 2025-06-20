@@ -313,6 +313,6 @@ if __name__ == '__main__':
     for grid_type in list_of_grid_types:
         for cntr_size in list_cntSize:
             print(f"Testing grid: {grid_type}, counter size: {cntr_size}")
-            image_path = r"5pics/square.jpg"
+            image_path = r"5pics/dog.jpg"
             test_quantization(model, image_path, grid_type=grid_type, cntr_size=cntr_size)
             print("--------------------------------------------------")
