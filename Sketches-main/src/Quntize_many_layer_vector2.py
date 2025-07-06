@@ -6,7 +6,24 @@ import torchvision.transforms as transforms
 import numpy as np
 from PIL import Image
 
-from quantizationItamar import generate_grid_INT
+from SingleCntrSimulator import getAllValsFP
+
+
+
+def generate_grid(cntrSize,signed, expSize=1, type='INT'):
+    """
+    Generate the grid for quantization.
+    """
+    if type == "INT":
+        if signed:
+            grid = np.array(range(-2 ** (cntrSize - 1) + 1, 2 ** (cntrSize - 1), 1))
+            return grid
+        else:
+            grid = np.array(range(2 ** cntrSize))
+            return grid
+    else:
+        grid = getAllValsFP(cntrSize, expSize=1, signed=signed)
+        return grid
 
 
 def quantize(vec, grid, clamp_outliers=False, lower_bnd=None, upper_bnd=None):
@@ -240,13 +257,34 @@ if __name__ == '__main__':
     model.eval()
     image_path = "5pics/dog.jpg"
     image_tensor = preprocess_image(image_path)
-    cntrSize = 8
-    # Generate a signed grid for quantization between -2^cntrSize and 2^cntrSize
-    grid = generate_grid_INT(cntrSize, signed=True)
+    # cntrSize = 8
+    # # Generate a signed grid for quantization between -2^cntrSize and 2^cntrSize
+    # grid = generate_grid(cntrSize, signed=True, type='FP')
+    #
+    # quantize_model_weights(model, grid, debug=True)
+    # output = run_quantized_forward(model, image_tensor, grid, debug=True)
+    #
+    # output_fp = model(image_tensor)
+    # print("for cntrSize:", cntrSize)
+    # evaluate_quantization(output_fp, output)
+
+
+
+fp_configs = [
+    {'cntrSize': 8,  'expSize': 4, 'name': 'FP8_E4M3'},   # 1 sign bit + 4 exponent + 3 mantissa
+    {'cntrSize': 8,  'expSize': 5, 'name': 'FP8_E5M2'},   # 1 sign + 5 exponent + 2 mantissa
+    {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6'},  # 1 sign + 5 exponent + 6 mantissa
+    {'cntrSize': 16, 'expSize': 5, 'name': 'FP16_E5M10'}  # 1 sign + 5 exponent + 10 mantissa
+]
+
+
+for cfg in fp_configs:
+    print("\n==========================")
+    print(f"Running for {cfg['name']} (cntr={cfg['cntrSize']}, exp={cfg['expSize']})")
+    grid = generate_grid(cntrSize=cfg['cntrSize'], signed=True,expSize=cfg['expSize'],  type='FP')
 
     quantize_model_weights(model, grid, debug=True)
     output = run_quantized_forward(model, image_tensor, grid, debug=True)
-
     output_fp = model(image_tensor)
-    print("for cntrSize:", cntrSize)
+
     evaluate_quantization(output_fp, output)
