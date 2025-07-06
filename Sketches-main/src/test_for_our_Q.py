@@ -197,7 +197,7 @@ def test(func, vec2quantize, grid,vec_name):
 if __name__ == '__main__':
     func1 = Quantizer.quantize
     func2 = testing_our.quantize
-    grid1 = quantizationItamar.generate_grid(8, True)
+    grid1 = quantizationItamar.generate_grid_INT(8, True)
     flavor ="F2P_li_h2"
     grid2 = Quantizer.getAllValsFxp(
         fxpSettingStr=flavor,

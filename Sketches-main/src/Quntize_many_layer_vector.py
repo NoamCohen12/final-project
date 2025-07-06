@@ -52,7 +52,7 @@ def register_nan_hooks(model, log_only=False, verbose_channels=True):
 
 def generate_and_validate_grid(grid_type: str, cntr_size: int) -> np.ndarray:
     if grid_type.startswith("int"):
-        grid = quantizationItamar.generate_grid(cntr_size, signed=True)
+        grid = quantizationItamar.generate_grid_INT(cntr_size, signed=True)
     elif grid_type.startswith("F2P"):
         grid = Quantizer.getAllValsFxp(fxpSettingStr=grid_type, cntrSize=cntr_size, signed=True)
     else:

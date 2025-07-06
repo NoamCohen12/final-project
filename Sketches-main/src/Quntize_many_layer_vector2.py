@@ -6,7 +6,7 @@ import torchvision.transforms as transforms
 import numpy as np
 from PIL import Image
 
-from quantizationItamar import generate_grid
+from quantizationItamar import generate_grid_INT
 
 
 def quantize(vec, grid, clamp_outliers=False, lower_bnd=None, upper_bnd=None):
@@ -49,7 +49,7 @@ def preprocess_image(image_path):
     return transform(image).unsqueeze(0)
 
 
-def quantize_model_weights(model, grid):
+def quantize_model_weights(model, grid, debug=False):
     for name, layer in model.named_modules():
         if isinstance(layer, (nn.Conv2d, nn.Linear)):
             w = layer.weight.detach().cpu().numpy().flatten()
@@ -58,9 +58,13 @@ def quantize_model_weights(model, grid):
                 'w_q': torch.tensor(w_q.reshape(layer.weight.shape), dtype=torch.float32),
                 'scale': scale
             }
+            if debug:
+                print(
+                    f"[Quantized] {name} ({type(layer).__name__}) - weight shape: {layer.weight.shape}, scale: {scale:.4g}")
+
         # Quantize downsample conv if exists
         elif hasattr(layer, 'downsample') and isinstance(layer.downsample, nn.Sequential):
-            for sublayer in layer.downsample:
+            for i, sublayer in enumerate(layer.downsample):
                 if isinstance(sublayer, nn.Conv2d):
                     w = sublayer.weight.detach().cpu().numpy().flatten()
                     w_q, scale, _ = quantize(w, grid)
@@ -68,6 +72,9 @@ def quantize_model_weights(model, grid):
                         'w_q': torch.tensor(w_q.reshape(sublayer.weight.shape), dtype=torch.float32),
                         'scale': scale
                     }
+                    if debug:
+                        print(
+                            f"[Quantized] {name}.downsample[{i}] ({type(sublayer).__name__}) - weight shape: {sublayer.weight.shape}, scale: {scale:.4g}")
 
 
 def q_layer(x, layer, grid):
@@ -89,8 +96,9 @@ def q_layer(x, layer, grid):
     return z_q * (s_x * s_w)
 
 
-def run_quantized_forward(model, x, grid):
+def run_quantized_forward(model, x, grid, debug=False):
     with torch.no_grad():
+        if debug: print("Entering: conv1")
         x = q_layer(x, model.conv1, grid)
         x = model.bn1(x)
         x = model.relu(x)
@@ -101,13 +109,16 @@ def run_quantized_forward(model, x, grid):
             if isinstance(block.downsample, nn.Sequential):
                 for ds_layer in block.downsample:
                     if isinstance(ds_layer, nn.Conv2d):
+                        if debug: print("Layer1 - downsample conv")
                         residual = q_layer(x, ds_layer, grid)
                     elif isinstance(ds_layer, nn.BatchNorm2d):
                         residual = ds_layer(residual)
 
+            if debug: print("Layer1 - conv1")
             x = q_layer(x, block.conv1, grid)
             x = block.bn1(x)
-            x = block.relu(x)
+            x = model.relu(x)
+            if debug: print("Layer1 - conv2")
             x = q_layer(x, block.conv2, grid)
             x = block.bn2(x)
             x += residual
@@ -118,13 +129,16 @@ def run_quantized_forward(model, x, grid):
             if isinstance(block.downsample, nn.Sequential):
                 for ds_layer in block.downsample:
                     if isinstance(ds_layer, nn.Conv2d):
+                        if debug: print("Layer2 - downsample conv")
                         residual = q_layer(x, ds_layer, grid)
                     elif isinstance(ds_layer, nn.BatchNorm2d):
                         residual = ds_layer(residual)
 
+            if debug: print("Layer2 - conv1")
             x = q_layer(x, block.conv1, grid)
             x = block.bn1(x)
-            x = block.relu(x)
+            x = model.relu(x)
+            if debug: print("Layer2 - conv2")
             x = q_layer(x, block.conv2, grid)
             x = block.bn2(x)
             x += residual
@@ -135,13 +149,16 @@ def run_quantized_forward(model, x, grid):
             if isinstance(block.downsample, nn.Sequential):
                 for ds_layer in block.downsample:
                     if isinstance(ds_layer, nn.Conv2d):
+                        if debug: print("Layer3 - downsample conv")
                         residual = q_layer(x, ds_layer, grid)
                     elif isinstance(ds_layer, nn.BatchNorm2d):
                         residual = ds_layer(residual)
 
+            if debug: print("Layer3 - conv1")
             x = q_layer(x, block.conv1, grid)
             x = block.bn1(x)
-            x = block.relu(x)
+            x = model.relu(x)
+            if debug: print("Layer3 - conv2")
             x = q_layer(x, block.conv2, grid)
             x = block.bn2(x)
             x += residual
@@ -152,13 +169,16 @@ def run_quantized_forward(model, x, grid):
             if isinstance(block.downsample, nn.Sequential):
                 for ds_layer in block.downsample:
                     if isinstance(ds_layer, nn.Conv2d):
+                        if debug: print("Layer4 - downsample conv")
                         residual = q_layer(x, ds_layer, grid)
                     elif isinstance(ds_layer, nn.BatchNorm2d):
                         residual = ds_layer(residual)
 
+            if debug: print("Layer4 - conv1")
             x = q_layer(x, block.conv1, grid)
             x = block.bn1(x)
             x = block.relu(x)
+            if debug: print("Layer4 - conv2")
             x = q_layer(x, block.conv2, grid)
             x = block.bn2(x)
             x += residual
@@ -166,6 +186,7 @@ def run_quantized_forward(model, x, grid):
 
         x = model.avgpool(x)
         x = torch.flatten(x, 1)
+        if debug: print("Entering: fc")
         x = q_layer(x, model.fc, grid)
         return x
 
@@ -219,10 +240,13 @@ if __name__ == '__main__':
     model.eval()
     image_path = "5pics/dog.jpg"
     image_tensor = preprocess_image(image_path)
-    grid = generate_grid(16, signed=True)
+    cntrSize = 8
+    # Generate a signed grid for quantization between -2^cntrSize and 2^cntrSize
+    grid = generate_grid_INT(cntrSize, signed=True)
 
-    quantize_model_weights(model, grid)
-    output = run_quantized_forward(model, image_tensor, grid)
+    quantize_model_weights(model, grid, debug=True)
+    output = run_quantized_forward(model, image_tensor, grid, debug=True)
 
     output_fp = model(image_tensor)
+    print("for cntrSize:", cntrSize)
     evaluate_quantization(output_fp, output)

@@ -65,7 +65,7 @@ def test_quantization(model, image_path, grid_type="int", cntr_size=14):
         print(f"Original Top-5 scores: {original_top5_scores}")
 
     if grid_type.startswith("int"):
-        grid = quantizationItamar.generate_grid(cntr_size, signed=True)
+        grid = quantizationItamar.generate_grid_INT(cntr_size, signed=True)
         print(f"Grid shape: {grid.shape}, values: {grid[:5]}...{grid[-5:]}")
 
     elif grid_type.startswith("F2P"):

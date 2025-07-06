@@ -209,7 +209,7 @@ def process_layer_parameter(parameter, quantization_type, cntrSize, signed, verb
         case "RANDOM":
             parameter.data = random_tensor(parameter.data)
         case "INT":
-            grid = generate_grid(cntrSize, signed)
+            grid = generate_grid_INT(cntrSize, signed)
             parameter.data = quantize_tensor(parameter.data, grid, verbose, flavor)
 
         case "F2P":
@@ -440,7 +440,7 @@ def predict_image(model, image_path, device='cpu') -> tuple:
 # quantization type (str): (a)symmetric
 
 
-def generate_grid(cntrSize, signed):
+def generate_grid_INT(cntrSize, signed):
     """
     Generate the grid for quantization.
     """

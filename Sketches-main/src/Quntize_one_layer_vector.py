@@ -62,7 +62,7 @@ def test_quantization(grid_type="int", cntr_size=14, X_array=None, verbose=[]):
     print(f"Original output: {original_output}")
 
     if grid_type.startswith("int"):
-        grid = quantizationItamar.generate_grid(cntr_size, signed=True)
+        grid = quantizationItamar.generate_grid_INT(cntr_size, signed=True)
     elif grid_type.startswith("F2P"):
         grid = Quantizer.getAllValsFxp(fxpSettingStr=grid_type, cntrSize=cntr_size, verbose=[], signed=True)
         print(f"Quantization grid ({grid_type}): {grid[:10]} ... {grid[-10:]}")

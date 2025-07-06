@@ -78,7 +78,7 @@ if __name__ == '__main__':
     original_output = model(X).item()
 
     # 2. Generate quantization grid
-    grid = quantizationItamar.generate_grid(8, signed=True)
+    grid = quantizationItamar.generate_grid_INT(8, signed=True)
 
     # 3. Get original shape BEFORE flattening (MOVE THIS LINE UP!)
     original_shape = model.fc.weight.data.shape
