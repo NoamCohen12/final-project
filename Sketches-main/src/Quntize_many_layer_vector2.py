@@ -26,7 +26,42 @@ def generate_grid(cntrSize,signed, expSize=1, type='INT'):
         return grid
 
 
-def quantize(vec, grid, clamp_outliers=False, lower_bnd=None, upper_bnd=None):
+# def quantize(vec, grid, clamp_outliers=False, lower_bnd=None, upper_bnd=None):
+#     if not isinstance(vec, np.ndarray):
+#         vec = np.array(vec)
+#     if not isinstance(grid, np.ndarray):
+#         grid = np.array(grid)
+#
+#     if np.min(grid) >= 0:
+#         raise ValueError("Grid must be signed (contain negative values)")
+#
+#     if clamp_outliers:
+#         if lower_bnd is None or upper_bnd is None:
+#             raise ValueError("Clamping requested but bounds not specified")
+#         vec = np.clip(vec, lower_bnd, upper_bnd)
+#
+#     abs_max_vec = np.percentile(np.abs(vec), 99.9)
+#     abs_max_grid = np.max(np.abs(grid))
+#
+#     if abs_max_vec == 0 or abs_max_grid == 0:
+#         raise ValueError("Invalid quantization input or grid")
+#
+#     scale = abs_max_vec / abs_max_grid
+#     scaled_vec = vec / scale
+#
+#     if np.isnan(scaled_vec).any() or np.isinf(scaled_vec).any():
+#         raise ValueError("scaled_vec contains NaN or Inf")
+#
+#     quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
+#     return quantized_vec, scale, 0
+
+def quantize(
+    vec, grid,
+    clamp_outliers=False,
+    lower_bnd=None, upper_bnd=None,
+    percentile_limits=(1, 99),
+    std_multiplier=3
+):
     if not isinstance(vec, np.ndarray):
         vec = np.array(vec)
     if not isinstance(grid, np.ndarray):
@@ -35,11 +70,24 @@ def quantize(vec, grid, clamp_outliers=False, lower_bnd=None, upper_bnd=None):
     if np.min(grid) >= 0:
         raise ValueError("Grid must be signed (contain negative values)")
 
+    # 🧠 חיתוך ערכים קיצוניים לפי מה שביקש המשתמש
     if clamp_outliers:
-        if lower_bnd is None or upper_bnd is None:
-            raise ValueError("Clamping requested but bounds not specified")
+        if clamp_outliers == "percentile":
+            lower_bnd = np.percentile(vec, percentile_limits[0])
+            upper_bnd = np.percentile(vec, percentile_limits[1])
+        elif clamp_outliers == "std":
+            mean = np.mean(vec)
+            std = np.std(vec)
+            lower_bnd = mean - std_multiplier * std
+            upper_bnd = mean + std_multiplier * std
+        elif lower_bnd is not None and upper_bnd is not None:
+            pass  # משתמש נתן גבולות ידניים
+        else:
+            raise ValueError("Clamping requested but bounds not specified or mode invalid")
+
         vec = np.clip(vec, lower_bnd, upper_bnd)
 
+    # 👇 המשך תהליך הקוונטיזציה כרגיל
     abs_max_vec = np.percentile(np.abs(vec), 99.9)
     abs_max_grid = np.max(np.abs(grid))
 
@@ -56,6 +104,7 @@ def quantize(vec, grid, clamp_outliers=False, lower_bnd=None, upper_bnd=None):
     return quantized_vec, scale, 0
 
 
+
 def preprocess_image(image_path):
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -66,15 +115,28 @@ def preprocess_image(image_path):
     return transform(image).unsqueeze(0)
 
 
-def quantize_model_weights(model, grid, debug=False):
+def quantize_model_weights(model, grid, debug=False, clamp_outliers=None, percentile_limits=(1, 99), std_multiplier=3):
     for name, layer in model.named_modules():
         if isinstance(layer, (nn.Conv2d, nn.Linear)):
             w = layer.weight.detach().cpu().numpy().flatten()
-            w_q, scale, _ = quantize(w, grid)
-            layer._quant_info = {
+            w_q, scale, _ = quantize(w, grid,
+                                     clamp_outliers=clamp_outliers,
+                                     percentile_limits=percentile_limits,
+                                     std_multiplier=std_multiplier)
+            #todo change from layer._quant_info to quant_info
+            quant_info = {
                 'w_q': torch.tensor(w_q.reshape(layer.weight.shape), dtype=torch.float32),
-                'scale': scale
+                'scale_w': scale
             }
+            #todo---------------------------------------------------------------------------
+
+            # ✅ שמור את bias המקורי בלבד
+            if layer.bias is not None:
+                quant_info['bias_fp'] = layer.bias.detach().cpu().numpy().flatten()
+
+            layer._quant_info = quant_info
+            # todo-------------------------------------------------------------------
+
             if debug:
                 print(
                     f"[Quantized] {name} ({type(layer).__name__}) - weight shape: {layer.weight.shape}, scale: {scale:.4g}")
@@ -100,13 +162,30 @@ def q_layer(x, layer, grid):
     x_q = torch.tensor(x_q.reshape(x.shape), dtype=torch.float32).to(x.device)
 
     w_q = layer._quant_info['w_q'].to(x.device)
-    s_w = layer._quant_info['scale']
+    s_w = layer._quant_info['scale_w']
+    #todo-------------------------------------------------------------------
+    # ✅ אם קיים bias, קוונטז אותו עם scale_b = s_x * s_w
+    if 'bias_fp' in layer._quant_info:
+        b_fp = layer._quant_info['bias_fp']
+        b_fp = torch.tensor(b_fp.reshape(layer.bias.shape), dtype=torch.float32).to(x.device)
+
+        # scale_b = s_x * s_w
+        # b_q_vals = np.round(b_fp / scale_b)
+        # b_q = torch.tensor(b_q_vals.reshape(layer.bias.shape), dtype=torch.float32).to(x.device)
+        print(f"Bias shape: {layer.bias.shape}, bias_fp: {b_fp.shape}")
+
+    else:
+        b_fp = None
+    #todo-------------------------------------------------------------------
+
+
 
     if isinstance(layer, nn.Conv2d):
-        z_q = F.conv2d(x_q, w_q, bias=None, stride=layer.stride,
+        # todo-----bias=NONE to bias=b_q
+        z_q = F.conv2d(x_q, w_q, bias=b_fp, stride=layer.stride,
                        padding=layer.padding, dilation=layer.dilation, groups=layer.groups)
     elif isinstance(layer, nn.Linear):
-        z_q = F.linear(x_q, w_q, bias=None)
+        z_q = F.linear(x_q, w_q, bias=b_fp)
     else:
         raise NotImplementedError
 
@@ -227,6 +306,7 @@ def evaluate_quantization(output_fp, output_q):
     mae = torch.mean(torch.abs(diff)).item()
     max_error = torch.max(torch.abs(diff)).item()
 
+
     # Relative errors (avoid divide-by-zero)
     denom = torch.abs(output_fp) + 1e-8
     rel_error = torch.abs(diff) / denom
@@ -235,6 +315,9 @@ def evaluate_quantization(output_fp, output_q):
     # Confidence
     conf_fp = prob_fp[0, top1_fp].item()
     conf_q = prob_q[0, top1_q].item()
+
+    # Mean Squared Error (MSE)
+    mse = torch.mean(diff ** 2).item()
 
     # Print results
     print(f"Top-1 Match: {'✅' if top1_fp.item() == top1_q.item() else '❌'}")
@@ -247,6 +330,7 @@ def evaluate_quantization(output_fp, output_q):
     print(f"Mean Absolute Error (mean_error): {mae:.6f}")
     print(f"Max Absolute Error: {max_error:.6f}")
     print(f"Max Relative Error (max_error_relative): {max_error_relative:.6f}")
+    print(f"Mean Squared Error (MSE): {mse:.6f}")
     print(f"Confidence (FP): {conf_fp:.3f}")
     print(f"Confidence (Quantized): {conf_q:.3f}")
     print(f"Confidence Δ: {abs(conf_fp - conf_q):.3f}")
@@ -257,34 +341,41 @@ if __name__ == '__main__':
     model.eval()
     image_path = "5pics/dog.jpg"
     image_tensor = preprocess_image(image_path)
-    # cntrSize = 8
-    # # Generate a signed grid for quantization between -2^cntrSize and 2^cntrSize
-    # grid = generate_grid(cntrSize, signed=True, type='FP')
-    #
-    # quantize_model_weights(model, grid, debug=True)
-    # output = run_quantized_forward(model, image_tensor, grid, debug=True)
-    #
-    # output_fp = model(image_tensor)
-    # print("for cntrSize:", cntrSize)
-    # evaluate_quantization(output_fp, output)
-
-
-
-fp_configs = [
-    {'cntrSize': 8,  'expSize': 4, 'name': 'FP8_E4M3'},   # 1 sign bit + 4 exponent + 3 mantissa
-    {'cntrSize': 8,  'expSize': 5, 'name': 'FP8_E5M2'},   # 1 sign + 5 exponent + 2 mantissa
-    {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6'},  # 1 sign + 5 exponent + 6 mantissa
-    {'cntrSize': 16, 'expSize': 5, 'name': 'FP16_E5M10'}  # 1 sign + 5 exponent + 10 mantissa
-]
-
-
-for cfg in fp_configs:
-    print("\n==========================")
-    print(f"Running for {cfg['name']} (cntr={cfg['cntrSize']}, exp={cfg['expSize']})")
-    grid = generate_grid(cntrSize=cfg['cntrSize'], signed=True,expSize=cfg['expSize'],  type='FP')
+    cntrSize = 16
+    # Generate a signed grid for quantization between -2^cntrSize and 2^cntrSize
+    grid = generate_grid(cntrSize, signed=True, type='INT')
 
     quantize_model_weights(model, grid, debug=True)
     output = run_quantized_forward(model, image_tensor, grid, debug=True)
-    output_fp = model(image_tensor)
 
+    output_fp = model(image_tensor)
+    print("for cntrSize:", cntrSize)
     evaluate_quantization(output_fp, output)
+
+
+
+# fp_configs = [
+#     {'cntrSize': 8,  'expSize': 4, 'name': 'FP8_E4M3', 'clamp': None},   # 1 sign bit + 4 exponent + 3 mantissa
+#     {'cntrSize': 8,  'expSize': 4, 'name': 'FP8_E4M3_clamped', 'clamp': "percentile"},   # 1 sign + 5 exponent + 2 mantissa
+#     {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6', 'clamp': None},  # 1 sign + 5 exponent + 6 mantissa
+#     {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6_std', 'clamp': "std"}  # 1 sign + 5 exponent + 10 mantissa
+# ]
+
+
+# for cfg in fp_configs:
+#     print("\n==========================")
+#     print(f"Running for {cfg['name']} (cntr={cfg['cntrSize']}, exp={cfg['expSize']})")
+#     grid = generate_grid(cntrSize=cfg['cntrSize'], signed=True,expSize=cfg['expSize'],  type='FP')
+#
+#     quantize_model_weights(
+#         model,
+#         grid,
+#         debug=True,
+#         clamp_outliers=cfg.get('clamp', None),
+#         percentile_limits=(1, 99),
+#         std_multiplier=3
+#     )
+#     output = run_quantized_forward(model, image_tensor, grid, debug=True)
+#     output_fp = model(image_tensor)
+#
+#     evaluate_quantization(output_fp, output)
