@@ -25,36 +25,6 @@ def generate_grid(cntrSize,signed, expSize=1, type='INT'):
         grid = getAllValsFP(cntrSize, expSize=1, signed=signed)
         return grid
 
-
-# def quantize(vec, grid, clamp_outliers=False, lower_bnd=None, upper_bnd=None):
-#     if not isinstance(vec, np.ndarray):
-#         vec = np.array(vec)
-#     if not isinstance(grid, np.ndarray):
-#         grid = np.array(grid)
-#
-#     if np.min(grid) >= 0:
-#         raise ValueError("Grid must be signed (contain negative values)")
-#
-#     if clamp_outliers:
-#         if lower_bnd is None or upper_bnd is None:
-#             raise ValueError("Clamping requested but bounds not specified")
-#         vec = np.clip(vec, lower_bnd, upper_bnd)
-#
-#     abs_max_vec = np.percentile(np.abs(vec), 99.9)
-#     abs_max_grid = np.max(np.abs(grid))
-#
-#     if abs_max_vec == 0 or abs_max_grid == 0:
-#         raise ValueError("Invalid quantization input or grid")
-#
-#     scale = abs_max_vec / abs_max_grid
-#     scaled_vec = vec / scale
-#
-#     if np.isnan(scaled_vec).any() or np.isinf(scaled_vec).any():
-#         raise ValueError("scaled_vec contains NaN or Inf")
-#
-#     quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
-#     return quantized_vec, scale, 0
-
 def quantize(
     vec, grid,
     clamp_outliers=False,
@@ -70,7 +40,6 @@ def quantize(
     if np.min(grid) >= 0:
         raise ValueError("Grid must be signed (contain negative values)")
 
-    # 🧠 חיתוך ערכים קיצוניים לפי מה שביקש המשתמש
     if clamp_outliers:
         if clamp_outliers == "percentile":
             lower_bnd = np.percentile(vec, percentile_limits[0])
@@ -81,13 +50,12 @@ def quantize(
             lower_bnd = mean - std_multiplier * std
             upper_bnd = mean + std_multiplier * std
         elif lower_bnd is not None and upper_bnd is not None:
-            pass  # משתמש נתן גבולות ידניים
+            pass  # Use provided bounds
         else:
             raise ValueError("Clamping requested but bounds not specified or mode invalid")
 
         vec = np.clip(vec, lower_bnd, upper_bnd)
 
-    # 👇 המשך תהליך הקוונטיזציה כרגיל
     abs_max_vec = np.percentile(np.abs(vec), 99.9)
     abs_max_grid = np.max(np.abs(grid))
 
@@ -123,19 +91,15 @@ def quantize_model_weights(model, grid, debug=False, clamp_outliers=None, percen
                                      clamp_outliers=clamp_outliers,
                                      percentile_limits=percentile_limits,
                                      std_multiplier=std_multiplier)
-            #todo change from layer._quant_info to quant_info
             quant_info = {
                 'w_q': torch.tensor(w_q.reshape(layer.weight.shape), dtype=torch.float32),
                 'scale_w': scale
             }
-            #todo---------------------------------------------------------------------------
 
-            # ✅ שמור את bias המקורי בלבד
             if layer.bias is not None:
-                quant_info['bias_fp'] = layer.bias.detach().cpu().numpy().flatten()
+                quant_info['bias'] = layer.bias.detach().cpu().numpy().flatten()
 
             layer._quant_info = quant_info
-            # todo-------------------------------------------------------------------
 
             if debug:
                 print(
@@ -163,29 +127,20 @@ def q_layer(x, layer, grid):
 
     w_q = layer._quant_info['w_q'].to(x.device)
     s_w = layer._quant_info['scale_w']
-    #todo-------------------------------------------------------------------
-    # ✅ אם קיים bias, קוונטז אותו עם scale_b = s_x * s_w
-    if 'bias_fp' in layer._quant_info:
-        b_fp = layer._quant_info['bias_fp']
-        b_fp = torch.tensor(b_fp.reshape(layer.bias.shape), dtype=torch.float32).to(x.device)
 
-        # scale_b = s_x * s_w
-        # b_q_vals = np.round(b_fp / scale_b)
-        # b_q = torch.tensor(b_q_vals.reshape(layer.bias.shape), dtype=torch.float32).to(x.device)
-        print(f"Bias shape: {layer.bias.shape}, bias_fp: {b_fp.shape}")
-
+    if 'bias' in layer._quant_info:
+        b_w = layer._quant_info['bias']
+        b_w = torch.tensor(b_w.reshape(layer.bias.shape), dtype=torch.float32).to(x.device)
+        print(f"Bias shape: {layer.bias.shape}, bias: {b_w.shape}")
     else:
-        b_fp = None
-    #todo-------------------------------------------------------------------
-
+        b_w = None
 
 
     if isinstance(layer, nn.Conv2d):
-        # todo-----bias=NONE to bias=b_q
-        z_q = F.conv2d(x_q, w_q, bias=b_fp, stride=layer.stride,
+        z_q = F.conv2d(x_q, w_q, bias=b_w, stride=layer.stride,
                        padding=layer.padding, dilation=layer.dilation, groups=layer.groups)
     elif isinstance(layer, nn.Linear):
-        z_q = F.linear(x_q, w_q, bias=b_fp)
+        z_q = F.linear(x_q, w_q, bias=b_w)
     else:
         raise NotImplementedError
 
@@ -341,41 +296,55 @@ if __name__ == '__main__':
     model.eval()
     image_path = "5pics/dog.jpg"
     image_tensor = preprocess_image(image_path)
-    cntrSize = 16
-    # Generate a signed grid for quantization between -2^cntrSize and 2^cntrSize
-    grid = generate_grid(cntrSize, signed=True, type='INT')
+    # cntrSize = 16
+    # # Generate a signed grid for quantization between -2^cntrSize and 2^cntrSize
+    # grid = generate_grid(cntrSize, signed=True, type='INT')
+    #
+    # quantize_model_weights(model, grid, debug=True)
+    # output = run_quantized_forward(model, image_tensor, grid, debug=True)
+    #
+    # output_fp = model(image_tensor)
+    # print("for cntrSize:", cntrSize)
+    # evaluate_quantization(output_fp, output)
+    #
 
-    quantize_model_weights(model, grid, debug=True)
+
+fp_configs = [
+    {'cntrSize': 8,  'expSize': 3, 'name': 'FP8_E3M4', 'clamp': None},                  # 1 sign + 3 exponent + 4 mantissa, no clamping
+    {'cntrSize': 8,  'expSize': 3, 'name': 'FP8_E3M4_clamped', 'clamp': "percentile"},  # 1 sign + 3 exponent + 4 mantissa, clamped to percentile
+    {'cntrSize': 8, 'expSize': 3, 'name': 'FP8_E3M4_clamped', 'clamp': "std"},          # 1 sign + 3 exponent + 4 mantissa, clamped to std
+    {'cntrSize': 8,  'expSize': 4, 'name': 'FP8_E4M3', 'clamp': None},                  # 1 sign + 4 exponent + 3 mantissa, no clamping
+    {'cntrSize': 8,  'expSize': 4, 'name': 'FP8_E4M3_clamped', 'clamp': "percentile"},  # 1 sign + 4 exponent + 3 mantissa, clamped to percentile
+    {'cntrSize': 8, 'expSize': 4, 'name': 'FP8_E4M3_clamped', 'clamp': "std"},          # 1 sign + 4 exponent + 3 mantissa, clamped to std
+    {'cntrSize': 8,  'expSize': 5, 'name': 'FP8_E5M2', 'clamp': None},                  # 1 sign + 5 exponent + 2 mantissa, no clamping
+    {'cntrSize': 8,  'expSize': 5, 'name': 'FP8_E5M2_clamped', 'clamp': "percentile"},  # 1 sign + 5 exponent + 2 mantissa, clamped to percentile
+    {'cntrSize': 8, 'expSize': 5, 'name': 'FP8_E5M2_clamped', 'clamp': "std"},          # 1 sign + 5 exponent + 2 mantissa, clamped to std
+    {'cntrSize': 8,  'expSize': 6, 'name': 'FP8_E6M1', 'clamp': None},                  # 1 sign + 6 exponent + 1 mantissa, no clamping
+    {'cntrSize': 8,  'expSize': 6, 'name': 'FP8_E6M1_clamped', 'clamp': "percentile"},  # 1 sign + 6 exponent + 1 mantissa, clamped to percentile
+    {'cntrSize': 8, 'expSize': 6, 'name': 'FP8_E6M1_clamped', 'clamp': "std"},          # 1 sign + 6 exponent + 1 mantissa, clamped to std
+    {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6', 'clamp': None},                 # 1 sign + 5 exponent + 6 mantissa, no clamping
+    {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6', 'clamp': "percentile"},         # 1 sign + 5 exponent + 6 mantissa, clamped to percentile
+    {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6_std', 'clamp': "std"},            # 1 sign + 5 exponent + 6 mantissa, clamped to std
+    {'cntrSize': 16, 'expSize': 8, 'name': 'FP16_E8M7', 'clamp': None},                 # 1 sign + 8 exponent + 7 mantissa, no clamping
+    {'cntrSize': 16, 'expSize': 8, 'name': 'FP16_E8M7', 'clamp': "percentile"},         # 1 sign + 8 exponent + 7 mantissa, clamped to percentile
+    {'cntrSize': 16, 'expSize': 8, 'name': 'FP16_E8M7_std', 'clamp': "std"}             # 1 sign + 8 exponent + 7 mantissa, clamped to std
+]
+
+
+for cfg in fp_configs:
+    print("\n==========================")
+    print(f"Running for {cfg['name']} (cntr={cfg['cntrSize']}, exp={cfg['expSize']})")
+    grid = generate_grid(cntrSize=cfg['cntrSize'], signed=True,expSize=cfg['expSize'],  type='FP')
+
+    quantize_model_weights(
+        model,
+        grid,
+        debug=True,
+        clamp_outliers=cfg.get('clamp', None),
+        percentile_limits=(1, 99),
+        std_multiplier=3
+    )
     output = run_quantized_forward(model, image_tensor, grid, debug=True)
-
     output_fp = model(image_tensor)
-    print("for cntrSize:", cntrSize)
+
     evaluate_quantization(output_fp, output)
-
-
-
-# fp_configs = [
-#     {'cntrSize': 8,  'expSize': 4, 'name': 'FP8_E4M3', 'clamp': None},   # 1 sign bit + 4 exponent + 3 mantissa
-#     {'cntrSize': 8,  'expSize': 4, 'name': 'FP8_E4M3_clamped', 'clamp': "percentile"},   # 1 sign + 5 exponent + 2 mantissa
-#     {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6', 'clamp': None},  # 1 sign + 5 exponent + 6 mantissa
-#     {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6_std', 'clamp': "std"}  # 1 sign + 5 exponent + 10 mantissa
-# ]
-
-
-# for cfg in fp_configs:
-#     print("\n==========================")
-#     print(f"Running for {cfg['name']} (cntr={cfg['cntrSize']}, exp={cfg['expSize']})")
-#     grid = generate_grid(cntrSize=cfg['cntrSize'], signed=True,expSize=cfg['expSize'],  type='FP')
-#
-#     quantize_model_weights(
-#         model,
-#         grid,
-#         debug=True,
-#         clamp_outliers=cfg.get('clamp', None),
-#         percentile_limits=(1, 99),
-#         std_multiplier=3
-#     )
-#     output = run_quantized_forward(model, image_tensor, grid, debug=True)
-#     output_fp = model(image_tensor)
-#
-#     evaluate_quantization(output_fp, output)
