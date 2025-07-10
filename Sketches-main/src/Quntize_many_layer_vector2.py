@@ -31,51 +31,112 @@ def generate_grid(cntrSize, signed, expSize=1, type='INT'):
         return grid
 
 
+#
+# def quantize(
+#         vec, grid,
+#         clamp_outliers=None,  # None / 'percentile' / 'std'
+#         lower_bnd=None, upper_bnd=None,
+#         percentile_limits=(1, 99),
+#         std_multiplier=3
+# ):
+#     if not isinstance(vec, np.ndarray):
+#         vec = np.array(vec)
+#     if not isinstance(grid, np.ndarray):
+#         grid = np.array(grid)
+#
+#     if np.min(grid) >= 0:
+#         raise ValueError("Grid must be signed (contain negative values)")
+#     if clamp_outliers is not None:
+#         if clamp_outliers:
+#             if clamp_outliers == "percentile":
+#                 lower_bnd = np.percentile(vec, percentile_limits[0])
+#                 upper_bnd = np.percentile(vec, percentile_limits[1])
+#             elif clamp_outliers == "std":
+#                 mean = np.mean(vec)
+#                 std = np.std(vec)
+#                 lower_bnd = mean - std_multiplier * std
+#                 upper_bnd = mean + std_multiplier * std
+#             elif lower_bnd is not None and upper_bnd is not None:
+#                 pass  # Use provided bounds
+#             else:
+#                 raise ValueError("Clamping requested but bounds not specified or mode invalid")
+#
+#             vec = np.clip(vec, lower_bnd, upper_bnd)
+#
+#     abs_max_vec = np.percentile(np.abs(vec), 99.9)
+#     abs_max_grid = np.max(np.abs(grid))
+#
+#     if abs_max_vec == 0 or abs_max_grid == 0:
+#         raise ValueError("Invalid quantization input or grid")
+#
+#     scale = abs_max_vec / abs_max_grid
+#     scaled_vec = vec / scale
+#
+#     if np.isnan(scaled_vec).any() or np.isinf(scaled_vec).any():
+#         raise ValueError("scaled_vec contains NaN or Inf")
+#
+#     quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
+#     return quantized_vec, scale, 0
+
 def quantize(
         vec, grid,
         clamp_outliers=None,  # None / 'percentile' / 'std'
         lower_bnd=None, upper_bnd=None,
         percentile_limits=(1, 99),
-        std_multiplier=3
+        std_multiplier=3,
+        asymmetric=False
 ):
     if not isinstance(vec, np.ndarray):
         vec = np.array(vec)
     if not isinstance(grid, np.ndarray):
         grid = np.array(grid)
 
-    if np.min(grid) >= 0:
-        raise ValueError("Grid must be signed (contain negative values)")
+    if not asymmetric and np.min(grid) >= 0:
+        raise ValueError("Symmetric quantization requires signed grid (negative values)")
+
+    # Clamping if requested
     if clamp_outliers is not None:
-        if clamp_outliers:
-            if clamp_outliers == "percentile":
-                lower_bnd = np.percentile(vec, percentile_limits[0])
-                upper_bnd = np.percentile(vec, percentile_limits[1])
-            elif clamp_outliers == "std":
-                mean = np.mean(vec)
-                std = np.std(vec)
-                lower_bnd = mean - std_multiplier * std
-                upper_bnd = mean + std_multiplier * std
-            elif lower_bnd is not None and upper_bnd is not None:
-                pass  # Use provided bounds
-            else:
-                raise ValueError("Clamping requested but bounds not specified or mode invalid")
+        if clamp_outliers == "percentile":
+            lower_bnd = np.percentile(vec, percentile_limits[0])
+            upper_bnd = np.percentile(vec, percentile_limits[1])
+        elif clamp_outliers == "std":
+            mean = np.mean(vec)
+            std = np.std(vec)
+            lower_bnd = mean - std_multiplier * std
+            upper_bnd = mean + std_multiplier * std
+        elif lower_bnd is not None and upper_bnd is not None:
+            pass  # Use provided bounds
+        else:
+            raise ValueError("Clamping requested but bounds not specified or mode invalid")
 
-            vec = np.clip(vec, lower_bnd, upper_bnd)
+        vec = np.clip(vec, lower_bnd, upper_bnd)
 
-    abs_max_vec = np.percentile(np.abs(vec), 99.9)
-    abs_max_grid = np.max(np.abs(grid))
-
-    if abs_max_vec == 0 or abs_max_grid == 0:
-        raise ValueError("Invalid quantization input or grid")
-
-    scale = abs_max_vec / abs_max_grid
-    scaled_vec = vec / scale
+    if asymmetric:
+        min_val = np.min(vec)
+        max_val = np.max(vec)
+        qmin = np.min(grid)
+        qmax = np.max(grid)
+        scale = (max_val - min_val) / (qmax - qmin)
+        if scale == 0:
+            raise ValueError("Scale computed as zero in asymmetric quantization")
+        zero_point = round(-min_val / scale) + qmin
+        scaled_vec = np.round(vec / scale + zero_point)
+    else:
+        abs_max_vec = np.percentile(np.abs(vec), 99.9)
+        abs_max_grid = np.max(np.abs(grid))
+        if abs_max_vec == 0 or abs_max_grid == 0:
+            raise ValueError("Invalid quantization input or grid")
+        scale = abs_max_vec / abs_max_grid
+        scaled_vec = vec / scale
+        zero_point = 0
 
     if np.isnan(scaled_vec).any() or np.isinf(scaled_vec).any():
         raise ValueError("scaled_vec contains NaN or Inf")
 
+    # Find nearest value in grid
     quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
-    return quantized_vec, scale, 0
+
+    return quantized_vec, scale, zero_point
 
 
 def preprocess_image(image_path):
@@ -421,83 +482,55 @@ def evaluate_on_image_folder(model, run_quantized_forward, preprocess_fn, grid, 
     }
     return result
 
+
 if __name__ == '__main__':
+    image_dir = r"../../100 animals"
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     model.eval()
-    image_path = "5pics/dog.jpg"
-    image_tensor = preprocess_image(image_path)
-    # cntrSize = 16
-    # # Generate a signed grid for quantization between -2^cntrSize and 2^cntrSize
-    # grid = generate_grid(cntrSize, signed=True, type='INT')
-    #
-    # quantize_model_weights(model, grid, debug=True)
-    # output = run_quantized_forward(model, image_tensor, grid, debug=True)
-    #
-    # output_fp = model(image_tensor)
-    # print("for cntrSize:", cntrSize)
-    # evaluate_quantization(output_fp, output)
-    #
-# fp_configs = [
-#     # 1 sign + 3 exponent + 4 mantissa
-#     {'cntrSize': 8, 'expSize': 3, 'name': 'FP8_E3M4', 'clamp': None},
-#     {'cntrSize': 8, 'expSize': 3, 'name': 'FP8_E3M4_clamp_percentile', 'clamp': "percentile"},  # clamped by percentile
-#     {'cntrSize': 8, 'expSize': 3, 'name': 'FP8_E3M4_clamp_std', 'clamp': "std"},  # clamped by std
-#
-#     # 1 sign + 4 exponent + 3 mantissa
-#     {'cntrSize': 8, 'expSize': 4, 'name': 'FP8_E4M3', 'clamp': None},
-#     {'cntrSize': 8, 'expSize': 4, 'name': 'FP8_E4M3_clamp_percentile', 'clamp': "percentile"},
-#     {'cntrSize': 8, 'expSize': 4, 'name': 'FP8_E4M3_clamp_std', 'clamp': "std"},
-#
-#     # 1 sign + 5 exponent + 2 mantissa
-#     {'cntrSize': 8, 'expSize': 5, 'name': 'FP8_E5M2', 'clamp': None},
-#     {'cntrSize': 8, 'expSize': 5, 'name': 'FP8_E5M2_clamp_percentile', 'clamp': "percentile"},
-#     {'cntrSize': 8, 'expSize': 5, 'name': 'FP8_E5M2_clamp_std', 'clamp': "std"},
-#
-#     # 1 sign + 6 exponent + 1 mantissa
-#     {'cntrSize': 8, 'expSize': 6, 'name': 'FP8_E6M1', 'clamp': None},
-#     {'cntrSize': 8, 'expSize': 6, 'name': 'FP8_E6M1_clamp_percentile', 'clamp': "percentile"},
-#     {'cntrSize': 8, 'expSize': 6, 'name': 'FP8_E6M1_clamp_std', 'clamp': "std"},
-#
-#     # # 1 sign + 5 exponent + 6 mantissa
-#     {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6', 'clamp': None},
-#     {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6_clamp_percentile', 'clamp': "percentile"},
-#     {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6_clamp_std', 'clamp': "std"},
-#     #NOT WORKING!!!!!1
-#     # # 1 sign + 8 exponent + 7 mantissa
-#     # {'cntrSize': 16, 'expSize': 8, 'name': 'FP16_E8M7', 'clamp': None},
-#     # {'cntrSize': 16, 'expSize': 8, 'name': 'FP16_E8M7_clamp_percentile', 'clamp': "percentile"},
-#     # {'cntrSize': 16, 'expSize': 8, 'name': 'FP16_E8M7_clamp_std', 'clamp': "std"}
-# ]
-#
-# for cfg in fp_configs:
-#     print("\n==========================")
-#     print(f"Running for {cfg['name']} (cntr={cfg['cntrSize']}, exp={cfg['expSize']})")
-#     grid = generate_grid(cntrSize=cfg['cntrSize'], signed=True, expSize=cfg['expSize'], type='FP')
-#
-#     quantize_model_weights(
-#         model,
-#         grid,
-#         debug=True,
-#         clamp_outliers=cfg.get('clamp', None),
-#         percentile_limits=(1, 99),
-#         std_multiplier=3
-#     )
-#     output = run_quantized_forward(model, image_tensor, grid, debug=True)
-#     output_fp = model(image_tensor)
-#
-#     evaluate_quantization(output_fp, output)
+    configs = [
+        {'cntrSize': 8, 'isAsymmetric': False, 'clamp': None, 'name': 'INT8_symmetric_noclamp'},
+        {'cntrSize': 8, 'isAsymmetric': False, 'clamp': 'percentile', 'percentile_limits': (1, 99),'name': 'INT8_symmetric_clamp_p1'},
+        {'cntrSize': 8, 'isAsymmetric': False, 'clamp': 'percentile', 'percentile_limits': (0.1, 99.9), 'name': 'INT8_symmetric_clamp_p0.1'},
+        {'cntrSize': 8, 'isAsymmetric': False, 'clamp': 'std', 'std_multiplier': 3,'name': 'INT8_symmetric_clamp_std3'},
+        {'cntrSize': 8, 'isAsymmetric': False, 'clamp': 'std', 'std_multiplier': 4,'name': 'INT8_symmetric_clamp_std4'},
 
-    # Check just INT
-    image_dir = r"../../100 animals"
-    cntrSize = 8
-    grid = generate_grid(cntrSize, signed=True, type='INT')
-    quantize_model_weights(
+
+        {'cntrSize': 16, 'isAsymmetric': False, 'clamp': None, 'name': 'INT16_symmetric_noclamp'},
+        {'cntrSize': 16, 'isAsymmetric': False, 'clamp': 'percentile', 'percentile_limits': (1, 99),'name': 'INT16_symmetric_clamp_p1'},
+        {'cntrSize': 16, 'isAsymmetric': False, 'clamp': 'percentile', 'percentile_limits': (0.1, 99.9),'name': 'INT16_symmetric_clamp_p0.1'},
+        {'cntrSize': 16, 'isAsymmetric': False, 'clamp': 'std', 'std_multiplier': 3, 'name': 'INT16_symmetric_clamp_std3'},
+        {'cntrSize': 16, 'isAsymmetric': False, 'clamp': 'std', 'std_multiplier': 4,'name': 'INT16_symmetric_clamp_std4'},
+
+
+        {'cntrSize': 8, 'isAsymmetric': True, 'clamp': None, 'name': 'INT8_asymmetric_noclamp'},
+        {'cntrSize': 8, 'isAsymmetric': True, 'clamp': 'percentile', 'percentile_limits': (1, 99),'name': 'INT8_asymmetric_clamp_p1'},
+        {'cntrSize': 8, 'isAsymmetric': True, 'clamp': 'percentile', 'percentile_limits': (0.1, 99.9),'name': 'INT8_asymmetric_clamp_p0.1'},
+        {'cntrSize': 8, 'isAsymmetric': True, 'clamp': 'std', 'std_multiplier': 3,'name': 'INT8_asymmetric_clamp_std3'},
+        {'cntrSize': 8, 'isAsymmetric': True, 'clamp': 'std', 'std_multiplier': 4,'name': 'INT8_asymmetric_clamp_std4'},
+
+
+        {'cntrSize': 16, 'isAsymmetric': True, 'clamp': None, 'name': 'INT16_asymmetric_noclamp'},
+        {'cntrSize': 16, 'isAsymmetric': True, 'clamp': 'percentile', 'percentile_limits': (1, 99),'name': 'INT16_asymmetric_clamp_p1'},
+        {'cntrSize': 16, 'isAsymmetric': True, 'clamp': 'percentile', 'percentile_limits': (0.1, 99.9),'name': 'INT16_asymmetric_clamp_p0.1'},
+        {'cntrSize': 16, 'isAsymmetric': True, 'clamp': 'std', 'std_multiplier': 3,'name': 'INT16_asymmetric_clamp_std3'},
+        {'cntrSize': 16, 'isAsymmetric': True, 'clamp': 'std', 'std_multiplier': 4,'name': 'INT16_asymmetric_clamp_std4'},
+
+    ]
+    for cfg in configs:
+        if cfg['isAsymmetric']:
+            continue
+
+        print("\n==========================")
+        print(f"Running for {cfg['name']} (cntrSize={cfg['cntrSize']}, isAsymmetric={cfg['isAsymmetric']})")
+        cntrSize = cfg['cntrSize']
+        grid = generate_grid(cntrSize, signed=True, type='INT')
+        quantize_model_weights(
             model,
             grid,
             debug=True,
-            clamp_outliers=None,  # None / 'percentile' / 'std'
-            percentile_limits=(1, 99),
-            std_multiplier=3
+            clamp_outliers=cfg['clamp'],  # None / 'percentile' / 'std'
+            percentile_limits=cfg.get('percentile_limits'),
+            std_multiplier = cfg.get('std_multiplier')
         )
-    metrics = evaluate_on_image_folder(model, run_quantized_forward, preprocess_image, grid, image_dir)
-    print(f"Results for INT cntrSize={cntrSize}: {metrics}")
+        metrics = evaluate_on_image_folder(model, run_quantized_forward, preprocess_image, grid, image_dir)
+        print(f"Results for INT cntrSize={cntrSize}: {metrics}")
