@@ -1,16 +1,21 @@
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
+import matplotlib.pyplot as plt
 import torchvision.transforms as transforms
 import numpy as np
 from PIL import Image
+from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+from tqdm import tqdm
 
 from SingleCntrSimulator import getAllValsFP
 
 
-
-def generate_grid(cntrSize,signed, expSize=1, type='INT'):
+def generate_grid(cntrSize, signed, expSize=1, type='INT'):
     """
     Generate the grid for quantization.
     """
@@ -22,15 +27,16 @@ def generate_grid(cntrSize,signed, expSize=1, type='INT'):
             grid = np.array(range(2 ** cntrSize))
             return grid
     else:
-        grid = getAllValsFP(cntrSize, expSize=1, signed=signed)
+        grid = getAllValsFP(cntrSize, expSize=expSize, signed=signed)
         return grid
 
+
 def quantize(
-    vec, grid,
-    clamp_outliers=False,
-    lower_bnd=None, upper_bnd=None,
-    percentile_limits=(1, 99),
-    std_multiplier=3
+        vec, grid,
+        clamp_outliers=None,  # None / 'percentile' / 'std'
+        lower_bnd=None, upper_bnd=None,
+        percentile_limits=(1, 99),
+        std_multiplier=3
 ):
     if not isinstance(vec, np.ndarray):
         vec = np.array(vec)
@@ -39,22 +45,22 @@ def quantize(
 
     if np.min(grid) >= 0:
         raise ValueError("Grid must be signed (contain negative values)")
+    if clamp_outliers is not None:
+        if clamp_outliers:
+            if clamp_outliers == "percentile":
+                lower_bnd = np.percentile(vec, percentile_limits[0])
+                upper_bnd = np.percentile(vec, percentile_limits[1])
+            elif clamp_outliers == "std":
+                mean = np.mean(vec)
+                std = np.std(vec)
+                lower_bnd = mean - std_multiplier * std
+                upper_bnd = mean + std_multiplier * std
+            elif lower_bnd is not None and upper_bnd is not None:
+                pass  # Use provided bounds
+            else:
+                raise ValueError("Clamping requested but bounds not specified or mode invalid")
 
-    if clamp_outliers:
-        if clamp_outliers == "percentile":
-            lower_bnd = np.percentile(vec, percentile_limits[0])
-            upper_bnd = np.percentile(vec, percentile_limits[1])
-        elif clamp_outliers == "std":
-            mean = np.mean(vec)
-            std = np.std(vec)
-            lower_bnd = mean - std_multiplier * std
-            upper_bnd = mean + std_multiplier * std
-        elif lower_bnd is not None and upper_bnd is not None:
-            pass  # Use provided bounds
-        else:
-            raise ValueError("Clamping requested but bounds not specified or mode invalid")
-
-        vec = np.clip(vec, lower_bnd, upper_bnd)
+            vec = np.clip(vec, lower_bnd, upper_bnd)
 
     abs_max_vec = np.percentile(np.abs(vec), 99.9)
     abs_max_grid = np.max(np.abs(grid))
@@ -70,7 +76,6 @@ def quantize(
 
     quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
     return quantized_vec, scale, 0
-
 
 
 def preprocess_image(image_path):
@@ -131,10 +136,9 @@ def q_layer(x, layer, grid):
     if 'bias' in layer._quant_info:
         b_w = layer._quant_info['bias']
         b_w = torch.tensor(b_w.reshape(layer.bias.shape), dtype=torch.float32).to(x.device)
-        print(f"Bias shape: {layer.bias.shape}, bias: {b_w.shape}")
+        # print(f"Bias shape: {layer.bias.shape}, bias: {b_w.shape}")
     else:
         b_w = None
-
 
     if isinstance(layer, nn.Conv2d):
         z_q = F.conv2d(x_q, w_q, bias=b_w, stride=layer.stride,
@@ -261,7 +265,6 @@ def evaluate_quantization(output_fp, output_q):
     mae = torch.mean(torch.abs(diff)).item()
     max_error = torch.max(torch.abs(diff)).item()
 
-
     # Relative errors (avoid divide-by-zero)
     denom = torch.abs(output_fp) + 1e-8
     rel_error = torch.abs(diff) / denom
@@ -291,6 +294,133 @@ def evaluate_quantization(output_fp, output_q):
     print(f"Confidence Δ: {abs(conf_fp - conf_q):.3f}")
 
 
+def classification_metrics(y_true, y_pred):
+    metrics = {}
+    metrics['accuracy'] = accuracy_score(y_true, y_pred)
+    metrics['precision'] = precision_score(y_true, y_pred, average='macro', zero_division=0)
+    metrics['recall'] = recall_score(y_true, y_pred, average='macro', zero_division=0)
+    metrics['f1_score'] = f1_score(y_true, y_pred, average='macro', zero_division=0)
+    return metrics
+
+
+def quantization_error_metrics(output_fp, output_quant):
+    metrics = {}
+    metrics['MSE'] = mean_squared_error(output_fp, output_quant)
+    metrics['MAE'] = mean_absolute_error(output_fp, output_quant)
+    metrics['max_abs_error'] = np.max(np.abs(output_fp - output_quant))
+    metrics['confidence_delta'] = np.abs(np.max(output_fp) - np.max(output_quant))
+    return metrics
+
+
+# Plot classification metrics
+def plot_classification_metrics(metrics_dict, title="Classification Metrics"):
+    labels = list(metrics_dict.keys())
+    accuracy = [metrics_dict[fmt]['accuracy'] for fmt in labels]
+    precision = [metrics_dict[fmt]['precision'] for fmt in labels]
+    recall = [metrics_dict[fmt]['recall'] for fmt in labels]
+    f1 = [metrics_dict[fmt]['f1_score'] for fmt in labels]
+
+    x = np.arange(len(labels))
+    width = 0.2
+
+    plt.figure(figsize=(10, 6))
+    plt.bar(x - 1.5 * width, accuracy, width, label='Accuracy')
+    plt.bar(x - 0.5 * width, precision, width, label='Precision')
+    plt.bar(x + 0.5 * width, recall, width, label='Recall')
+    plt.bar(x + 1.5 * width, f1, width, label='F1 Score')
+
+    plt.xlabel('Quantization Format')
+    plt.ylabel('Score')
+    plt.title(title)
+    plt.xticks(x, labels, rotation=45)
+    plt.ylim(0, 1.1)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+# Plot quantization error metrics
+def plot_quantization_error(metrics_dict, title="Quantization Error Metrics"):
+    labels = list(metrics_dict.keys())
+    mse = [metrics_dict[fmt]['MSE'] for fmt in labels]
+    mae = [metrics_dict[fmt]['MAE'] for fmt in labels]
+    max_err = [metrics_dict[fmt]['max_abs_error'] for fmt in labels]
+
+    x = np.arange(len(labels))
+    width = 0.25
+
+    plt.figure(figsize=(10, 6))
+    plt.bar(x - width, mse, width, label='MSE')
+    plt.bar(x, mae, width, label='MAE')
+    plt.bar(x + width, max_err, width, label='Max Abs Error')
+
+    plt.xlabel('Quantization Format')
+    plt.ylabel('Error Value')
+    plt.title(title)
+    plt.xticks(x, labels, rotation=45)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+def evaluate_on_image_folder(model, run_quantized_forward, preprocess_fn, grid, image_dir):
+    y_true_all = []
+    y_pred_all = []
+
+    mse_list = []
+    mae_list = []
+    max_err_list = []
+    delta_list = []
+
+    image_paths = []
+    for root, _, files in os.walk(image_dir):
+        for file in files:
+            if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                image_paths.append(os.path.join(root, file))
+
+    if not image_paths:
+        print("⚠ No valid images were processed.")
+        return {
+            'accuracy': float('nan'),
+            'mean_MSE': float('nan'),
+            'mean_MAE': float('nan'),
+            'mean_max_abs_error': float('nan'),
+            'mean_confidence_delta': float('nan')
+        }
+
+    for img_path in tqdm(image_paths, desc="Evaluating"):
+        image_tensor = preprocess_fn(img_path)
+        with torch.no_grad():
+            output_fp = model(image_tensor)
+            output_q = run_quantized_forward(model, image_tensor, grid, debug=False)
+
+            prob_fp = torch.softmax(output_fp, dim=1)
+            prob_q = torch.softmax(output_q, dim=1)
+
+            top1_fp = torch.argmax(prob_fp, dim=1).item()
+            top1_q = torch.argmax(prob_q, dim=1).item()
+
+            print("top1_fp:", top1_fp, "top1_q:", top1_q)
+
+            y_true_all.append(top1_fp)
+            y_pred_all.append(top1_q)
+
+            mse_list.append(mean_squared_error(prob_fp.numpy(), prob_q.numpy()))
+            mae_list.append(mean_absolute_error(prob_fp.numpy(), prob_q.numpy()))
+            max_err_list.append(np.max(np.abs(prob_fp.numpy() - prob_q.numpy())))
+            delta_list.append(np.abs(np.max(prob_fp.numpy()) - np.max(prob_q.numpy())))
+
+    classification = classification_metrics(y_true_all, y_pred_all)
+
+    result = {
+        'accuracy': classification['accuracy'],
+        'mean_MSE': np.mean(mse_list),
+        'mean_MAE': np.mean(mae_list),
+        'mean_max_abs_error': np.mean(max_err_list),
+        'mean_confidence_delta': np.mean(delta_list)
+    }
+    return result
+
 if __name__ == '__main__':
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     model.eval()
@@ -307,44 +437,67 @@ if __name__ == '__main__':
     # print("for cntrSize:", cntrSize)
     # evaluate_quantization(output_fp, output)
     #
+# fp_configs = [
+#     # 1 sign + 3 exponent + 4 mantissa
+#     {'cntrSize': 8, 'expSize': 3, 'name': 'FP8_E3M4', 'clamp': None},
+#     {'cntrSize': 8, 'expSize': 3, 'name': 'FP8_E3M4_clamp_percentile', 'clamp': "percentile"},  # clamped by percentile
+#     {'cntrSize': 8, 'expSize': 3, 'name': 'FP8_E3M4_clamp_std', 'clamp': "std"},  # clamped by std
+#
+#     # 1 sign + 4 exponent + 3 mantissa
+#     {'cntrSize': 8, 'expSize': 4, 'name': 'FP8_E4M3', 'clamp': None},
+#     {'cntrSize': 8, 'expSize': 4, 'name': 'FP8_E4M3_clamp_percentile', 'clamp': "percentile"},
+#     {'cntrSize': 8, 'expSize': 4, 'name': 'FP8_E4M3_clamp_std', 'clamp': "std"},
+#
+#     # 1 sign + 5 exponent + 2 mantissa
+#     {'cntrSize': 8, 'expSize': 5, 'name': 'FP8_E5M2', 'clamp': None},
+#     {'cntrSize': 8, 'expSize': 5, 'name': 'FP8_E5M2_clamp_percentile', 'clamp': "percentile"},
+#     {'cntrSize': 8, 'expSize': 5, 'name': 'FP8_E5M2_clamp_std', 'clamp': "std"},
+#
+#     # 1 sign + 6 exponent + 1 mantissa
+#     {'cntrSize': 8, 'expSize': 6, 'name': 'FP8_E6M1', 'clamp': None},
+#     {'cntrSize': 8, 'expSize': 6, 'name': 'FP8_E6M1_clamp_percentile', 'clamp': "percentile"},
+#     {'cntrSize': 8, 'expSize': 6, 'name': 'FP8_E6M1_clamp_std', 'clamp': "std"},
+#
+#     # # 1 sign + 5 exponent + 6 mantissa
+#     {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6', 'clamp': None},
+#     {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6_clamp_percentile', 'clamp': "percentile"},
+#     {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6_clamp_std', 'clamp': "std"},
+#     #NOT WORKING!!!!!1
+#     # # 1 sign + 8 exponent + 7 mantissa
+#     # {'cntrSize': 16, 'expSize': 8, 'name': 'FP16_E8M7', 'clamp': None},
+#     # {'cntrSize': 16, 'expSize': 8, 'name': 'FP16_E8M7_clamp_percentile', 'clamp': "percentile"},
+#     # {'cntrSize': 16, 'expSize': 8, 'name': 'FP16_E8M7_clamp_std', 'clamp': "std"}
+# ]
+#
+# for cfg in fp_configs:
+#     print("\n==========================")
+#     print(f"Running for {cfg['name']} (cntr={cfg['cntrSize']}, exp={cfg['expSize']})")
+#     grid = generate_grid(cntrSize=cfg['cntrSize'], signed=True, expSize=cfg['expSize'], type='FP')
+#
+#     quantize_model_weights(
+#         model,
+#         grid,
+#         debug=True,
+#         clamp_outliers=cfg.get('clamp', None),
+#         percentile_limits=(1, 99),
+#         std_multiplier=3
+#     )
+#     output = run_quantized_forward(model, image_tensor, grid, debug=True)
+#     output_fp = model(image_tensor)
+#
+#     evaluate_quantization(output_fp, output)
 
-
-fp_configs = [
-    {'cntrSize': 8,  'expSize': 3, 'name': 'FP8_E3M4', 'clamp': None},                  # 1 sign + 3 exponent + 4 mantissa, no clamping
-    {'cntrSize': 8,  'expSize': 3, 'name': 'FP8_E3M4_clamped', 'clamp': "percentile"},  # 1 sign + 3 exponent + 4 mantissa, clamped to percentile
-    {'cntrSize': 8, 'expSize': 3, 'name': 'FP8_E3M4_clamped', 'clamp': "std"},          # 1 sign + 3 exponent + 4 mantissa, clamped to std
-    {'cntrSize': 8,  'expSize': 4, 'name': 'FP8_E4M3', 'clamp': None},                  # 1 sign + 4 exponent + 3 mantissa, no clamping
-    {'cntrSize': 8,  'expSize': 4, 'name': 'FP8_E4M3_clamped', 'clamp': "percentile"},  # 1 sign + 4 exponent + 3 mantissa, clamped to percentile
-    {'cntrSize': 8, 'expSize': 4, 'name': 'FP8_E4M3_clamped', 'clamp': "std"},          # 1 sign + 4 exponent + 3 mantissa, clamped to std
-    {'cntrSize': 8,  'expSize': 5, 'name': 'FP8_E5M2', 'clamp': None},                  # 1 sign + 5 exponent + 2 mantissa, no clamping
-    {'cntrSize': 8,  'expSize': 5, 'name': 'FP8_E5M2_clamped', 'clamp': "percentile"},  # 1 sign + 5 exponent + 2 mantissa, clamped to percentile
-    {'cntrSize': 8, 'expSize': 5, 'name': 'FP8_E5M2_clamped', 'clamp': "std"},          # 1 sign + 5 exponent + 2 mantissa, clamped to std
-    {'cntrSize': 8,  'expSize': 6, 'name': 'FP8_E6M1', 'clamp': None},                  # 1 sign + 6 exponent + 1 mantissa, no clamping
-    {'cntrSize': 8,  'expSize': 6, 'name': 'FP8_E6M1_clamped', 'clamp': "percentile"},  # 1 sign + 6 exponent + 1 mantissa, clamped to percentile
-    {'cntrSize': 8, 'expSize': 6, 'name': 'FP8_E6M1_clamped', 'clamp': "std"},          # 1 sign + 6 exponent + 1 mantissa, clamped to std
-    {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6', 'clamp': None},                 # 1 sign + 5 exponent + 6 mantissa, no clamping
-    {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6', 'clamp': "percentile"},         # 1 sign + 5 exponent + 6 mantissa, clamped to percentile
-    {'cntrSize': 12, 'expSize': 5, 'name': 'FP12_E5M6_std', 'clamp': "std"},            # 1 sign + 5 exponent + 6 mantissa, clamped to std
-    {'cntrSize': 16, 'expSize': 8, 'name': 'FP16_E8M7', 'clamp': None},                 # 1 sign + 8 exponent + 7 mantissa, no clamping
-    {'cntrSize': 16, 'expSize': 8, 'name': 'FP16_E8M7', 'clamp': "percentile"},         # 1 sign + 8 exponent + 7 mantissa, clamped to percentile
-    {'cntrSize': 16, 'expSize': 8, 'name': 'FP16_E8M7_std', 'clamp': "std"}             # 1 sign + 8 exponent + 7 mantissa, clamped to std
-]
-
-
-for cfg in fp_configs:
-    print("\n==========================")
-    print(f"Running for {cfg['name']} (cntr={cfg['cntrSize']}, exp={cfg['expSize']})")
-    grid = generate_grid(cntrSize=cfg['cntrSize'], signed=True,expSize=cfg['expSize'],  type='FP')
-
+    # Check just INT
+    image_dir = r"../../100 animals"
+    cntrSize = 8
+    grid = generate_grid(cntrSize, signed=True, type='INT')
     quantize_model_weights(
-        model,
-        grid,
-        debug=True,
-        clamp_outliers=cfg.get('clamp', None),
-        percentile_limits=(1, 99),
-        std_multiplier=3
-    )
-    output = run_quantized_forward(model, image_tensor, grid, debug=True)
-    output_fp = model(image_tensor)
-
-    evaluate_quantization(output_fp, output)
+            model,
+            grid,
+            debug=True,
+            clamp_outliers=None,  # None / 'percentile' / 'std'
+            percentile_limits=(1, 99),
+            std_multiplier=3
+        )
+    metrics = evaluate_on_image_folder(model, run_quantized_forward, preprocess_image, grid, image_dir)
+    print(f"Results for INT cntrSize={cntrSize}: {metrics}")
