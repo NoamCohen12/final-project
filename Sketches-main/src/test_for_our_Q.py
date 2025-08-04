@@ -1,5 +1,5 @@
 import numpy as np
-import quantizationItamar
+import Quntize_many_layer_vector2
 import Quantizer
 import testing_our
 
@@ -169,7 +169,7 @@ def test(func, vec2quantize, grid,vec_name):
     print(f"Grid: {grid[:10]} ... {grid[-10:]}")
     print(f"Grid : max: {np.max(grid)}, min: {np.min(grid)}")
 
-    quantized_vec, scale, zero_point = func(vec2quantize, grid)
+    quantized_vec, scale, zero_point = func(vec2quantize, grid,asymmetric=False)
 
     print_vector("Quantized vector", quantized_vec)
 
@@ -195,15 +195,7 @@ def test(func, vec2quantize, grid,vec_name):
 
 
 if __name__ == '__main__':
-    func1 = Quantizer.quantize
-    func2 = testing_our.quantize
-    grid1 = quantizationItamar.generate_grid_INT(8, True)
-    flavor ="F2P_li_h2"
-    grid2 = Quantizer.getAllValsFxp(
-        fxpSettingStr=flavor,
-        cntrSize=8,
-        verbose=[],
-        signed=True
-    )
+    func = Quntize_many_layer_vector2.quantize
+    grid = Quntize_many_layer_vector2.generate_grid(8, signed=True, type='INT')
     for vec_name, vec_data in vectors.items():
-        test(func1, vec_data, grid2, vec_name)
+        test(func, vec_data, grid, vec_name)

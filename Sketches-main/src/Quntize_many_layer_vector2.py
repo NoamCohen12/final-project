@@ -77,24 +77,25 @@ def generate_grid(cntrSize, signed, expSize=1, type='INT'):
 #
 #     quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
 #     return quantized_vec, scale, 0
-
 def quantize(
         vec, grid,
-        clamp_outliers=None,  # None / 'percentile' / 'std'
+        clamp_outliers=None,  # Options: None / 'percentile' / 'std'
         lower_bnd=None, upper_bnd=None,
         percentile_limits=(1, 99),
         std_multiplier=3,
         asymmetric=False
 ):
+    # Ensure inputs are NumPy arrays
     if not isinstance(vec, np.ndarray):
         vec = np.array(vec)
     if not isinstance(grid, np.ndarray):
         grid = np.array(grid)
 
+    # Symmetric quantization requires a signed grid (centered around 0)
     if not asymmetric and np.min(grid) >= 0:
-        raise ValueError("Symmetric quantization requires signed grid (negative values)")
+        raise ValueError("Symmetric quantization requires a signed grid (with negative values)")
 
-    # Clamping if requested
+    # Optional clamping to handle outliers
     if clamp_outliers is not None:
         if clamp_outliers == "percentile":
             lower_bnd = np.percentile(vec, percentile_limits[0])
@@ -107,34 +108,44 @@ def quantize(
         elif lower_bnd is not None and upper_bnd is not None:
             pass  # Use provided bounds
         else:
-            raise ValueError("Clamping requested but bounds not specified or mode invalid")
+            raise ValueError("Clamping was requested but no valid bounds or method provided")
 
         vec = np.clip(vec, lower_bnd, upper_bnd)
 
     if asymmetric:
+        # Asymmetric quantization: compute scale and zero-point
         min_val = np.min(vec)
         max_val = np.max(vec)
         qmin = np.min(grid)
         qmax = np.max(grid)
         scale = (max_val - min_val) / (qmax - qmin)
         if scale == 0:
-            raise ValueError("Scale computed as zero in asymmetric quantization")
-        zero_point = round(-min_val / scale) + qmin
+            raise ValueError("Scale is zero in asymmetric quantization")
+        zero_point = qmin - (min_val / scale)
+        zero_point = int(np.round(zero_point))  # Ensure zero_point is an integer
+
+        # Quantize to integer indices and clip to valid range
         scaled_vec = np.round(vec / scale + zero_point)
+        scaled_vec = np.clip(scaled_vec, qmin, qmax)
+        # Map each scaled value to the nearest value in the grid
+        quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
+
     else:
+        # Symmetric quantization: scale based on maximum absolute value
         abs_max_vec = np.percentile(np.abs(vec), 99.9)
         abs_max_grid = np.max(np.abs(grid))
         if abs_max_vec == 0 or abs_max_grid == 0:
-            raise ValueError("Invalid quantization input or grid")
+            raise ValueError("Invalid range in symmetric quantization")
         scale = abs_max_vec / abs_max_grid
         scaled_vec = vec / scale
         zero_point = 0
 
+        # Map each scaled value to the nearest value in the grid
+        quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
+
+    # Sanity check: ensure no invalid values
     if np.isnan(scaled_vec).any() or np.isinf(scaled_vec).any():
         raise ValueError("scaled_vec contains NaN or Inf")
-
-    # Find nearest value in grid
-    quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
 
     return quantized_vec, scale, zero_point
 
@@ -149,14 +160,17 @@ def preprocess_image(image_path):
     return transform(image).unsqueeze(0)
 
 
-def quantize_model_weights(model, grid, debug=False, clamp_outliers=None, percentile_limits=(1, 99), std_multiplier=3):
+def quantize_model_weights(model, grid, debug=False, clamp_outliers=None, percentile_limits=(1, 99), std_multiplier=3,
+                           isAsymmetric=False):
     for name, layer in model.named_modules():
         if isinstance(layer, (nn.Conv2d, nn.Linear)):
             w = layer.weight.detach().cpu().numpy().flatten()
             w_q, scale, _ = quantize(w, grid,
                                      clamp_outliers=clamp_outliers,
                                      percentile_limits=percentile_limits,
-                                     std_multiplier=std_multiplier)
+                                     std_multiplier=std_multiplier,
+                                     asymmetric=isAsymmetric
+                                     )
             quant_info = {
                 'w_q': torch.tensor(w_q.reshape(layer.weight.shape), dtype=torch.float32),
                 'scale_w': scale
@@ -176,19 +190,39 @@ def quantize_model_weights(model, grid, debug=False, clamp_outliers=None, percen
             for i, sublayer in enumerate(layer.downsample):
                 if isinstance(sublayer, nn.Conv2d):
                     w = sublayer.weight.detach().cpu().numpy().flatten()
-                    w_q, scale, _ = quantize(w, grid)
+                    w_q, scale, _ = quantize(
+                        w, grid,
+                        clamp_outliers=clamp_outliers,
+                        percentile_limits=percentile_limits,
+                        std_multiplier=std_multiplier,
+                        asymmetric=isAsymmetric
+                    )
                     sublayer._quant_info = {
                         'w_q': torch.tensor(w_q.reshape(sublayer.weight.shape), dtype=torch.float32),
                         'scale': scale
                     }
+
+                    if sublayer.bias is not None:
+                        sublayer._quant_info['bias'] = sublayer.bias.detach().cpu().numpy().flatten()
+
                     if debug:
                         print(
                             f"[Quantized] {name}.downsample[{i}] ({type(sublayer).__name__}) - weight shape: {sublayer.weight.shape}, scale: {scale:.4g}")
 
 
-def q_layer(x, layer, grid):
+def q_layer(x, layer, grid,
+            isAsymmetric=False,
+            clamp_outliers=None,
+            percentile_limits=(1, 99),
+            std_multiplier=3):
     x_np = x.detach().cpu().numpy().flatten()
-    x_q, s_x, _ = quantize(x_np, grid)
+    x_q, s_x, _ = quantize(
+        x_np, grid,
+        asymmetric=isAsymmetric,
+        clamp_outliers=clamp_outliers,
+        percentile_limits=percentile_limits,
+        std_multiplier=std_multiplier
+    )
     x_q = torch.tensor(x_q.reshape(x.shape), dtype=torch.float32).to(x.device)
 
     w_q = layer._quant_info['w_q'].to(x.device)
@@ -197,7 +231,6 @@ def q_layer(x, layer, grid):
     if 'bias' in layer._quant_info:
         b_w = layer._quant_info['bias']
         b_w = torch.tensor(b_w.reshape(layer.bias.shape), dtype=torch.float32).to(x.device)
-        # print(f"Bias shape: {layer.bias.shape}, bias: {b_w.shape}")
     else:
         b_w = None
 
@@ -212,10 +245,15 @@ def q_layer(x, layer, grid):
     return z_q * (s_x * s_w)
 
 
-def run_quantized_forward(model, x, grid, debug=False):
+def run_quantized_forward(model, x, grid,
+                          isAsymmetric=False,
+                          clamp_outliers=None,
+                          percentile_limits=(1, 99),
+                          std_multiplier=3,
+                          debug=False):
     with torch.no_grad():
         if debug: print("Entering: conv1")
-        x = q_layer(x, model.conv1, grid)
+        x = q_layer(x, model.conv1, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
         x = model.bn1(x)
         x = model.relu(x)
         x = model.maxpool(x)
@@ -226,16 +264,17 @@ def run_quantized_forward(model, x, grid, debug=False):
                 for ds_layer in block.downsample:
                     if isinstance(ds_layer, nn.Conv2d):
                         if debug: print("Layer1 - downsample conv")
-                        residual = q_layer(x, ds_layer, grid)
+                        residual = q_layer(x, ds_layer, grid, isAsymmetric, clamp_outliers, percentile_limits,
+                                           std_multiplier)
                     elif isinstance(ds_layer, nn.BatchNorm2d):
                         residual = ds_layer(residual)
 
             if debug: print("Layer1 - conv1")
-            x = q_layer(x, block.conv1, grid)
+            x = q_layer(x, block.conv1, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
             x = block.bn1(x)
             x = model.relu(x)
             if debug: print("Layer1 - conv2")
-            x = q_layer(x, block.conv2, grid)
+            x = q_layer(x, block.conv2, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
             x = block.bn2(x)
             x += residual
             x = block.relu(x)
@@ -246,16 +285,17 @@ def run_quantized_forward(model, x, grid, debug=False):
                 for ds_layer in block.downsample:
                     if isinstance(ds_layer, nn.Conv2d):
                         if debug: print("Layer2 - downsample conv")
-                        residual = q_layer(x, ds_layer, grid)
+                        residual = q_layer(x, ds_layer, grid, isAsymmetric, clamp_outliers, percentile_limits,
+                                           std_multiplier)
                     elif isinstance(ds_layer, nn.BatchNorm2d):
                         residual = ds_layer(residual)
 
             if debug: print("Layer2 - conv1")
-            x = q_layer(x, block.conv1, grid)
+            x = q_layer(x, block.conv1, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
             x = block.bn1(x)
             x = model.relu(x)
             if debug: print("Layer2 - conv2")
-            x = q_layer(x, block.conv2, grid)
+            x = q_layer(x, block.conv2, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
             x = block.bn2(x)
             x += residual
             x = block.relu(x)
@@ -266,16 +306,17 @@ def run_quantized_forward(model, x, grid, debug=False):
                 for ds_layer in block.downsample:
                     if isinstance(ds_layer, nn.Conv2d):
                         if debug: print("Layer3 - downsample conv")
-                        residual = q_layer(x, ds_layer, grid)
+                        residual = q_layer(x, ds_layer, grid, isAsymmetric, clamp_outliers, percentile_limits,
+                                           std_multiplier)
                     elif isinstance(ds_layer, nn.BatchNorm2d):
                         residual = ds_layer(residual)
 
             if debug: print("Layer3 - conv1")
-            x = q_layer(x, block.conv1, grid)
+            x = q_layer(x, block.conv1, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
             x = block.bn1(x)
             x = model.relu(x)
             if debug: print("Layer3 - conv2")
-            x = q_layer(x, block.conv2, grid)
+            x = q_layer(x, block.conv2, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
             x = block.bn2(x)
             x += residual
             x = block.relu(x)
@@ -286,16 +327,17 @@ def run_quantized_forward(model, x, grid, debug=False):
                 for ds_layer in block.downsample:
                     if isinstance(ds_layer, nn.Conv2d):
                         if debug: print("Layer4 - downsample conv")
-                        residual = q_layer(x, ds_layer, grid)
+                        residual = q_layer(x, ds_layer, grid, isAsymmetric, clamp_outliers, percentile_limits,
+                                           std_multiplier)
                     elif isinstance(ds_layer, nn.BatchNorm2d):
                         residual = ds_layer(residual)
 
             if debug: print("Layer4 - conv1")
-            x = q_layer(x, block.conv1, grid)
+            x = q_layer(x, block.conv1, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
             x = block.bn1(x)
             x = block.relu(x)
             if debug: print("Layer4 - conv2")
-            x = q_layer(x, block.conv2, grid)
+            x = q_layer(x, block.conv2, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
             x = block.bn2(x)
             x += residual
             x = block.relu(x)
@@ -303,7 +345,7 @@ def run_quantized_forward(model, x, grid, debug=False):
         x = model.avgpool(x)
         x = torch.flatten(x, 1)
         if debug: print("Entering: fc")
-        x = q_layer(x, model.fc, grid)
+        x = q_layer(x, model.fc, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
         return x
 
 
@@ -425,8 +467,7 @@ def plot_quantization_error(metrics_dict, title="Quantization Error Metrics"):
 
 
 def evaluate_on_image_folder(model, run_quantized_forward, preprocess_fn, grid, image_dir):
-    y_true_all = []
-    y_pred_all = []
+    y_true_all, y_pred_all = [], []
 
     mse_list = []
     mae_list = []
@@ -439,6 +480,7 @@ def evaluate_on_image_folder(model, run_quantized_forward, preprocess_fn, grid, 
             if file.lower().endswith(('.jpg', '.jpeg', '.png')):
                 image_paths.append(os.path.join(root, file))
 
+    print(f"Found {len(image_paths)} images in {image_dir}")
     if not image_paths:
         print("⚠ No valid images were processed.")
         return {
@@ -488,49 +530,68 @@ if __name__ == '__main__':
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     model.eval()
     configs = [
-        {'cntrSize': 8, 'isAsymmetric': False, 'clamp': None, 'name': 'INT8_symmetric_noclamp'},
-        {'cntrSize': 8, 'isAsymmetric': False, 'clamp': 'percentile', 'percentile_limits': (1, 99),'name': 'INT8_symmetric_clamp_p1'},
-        {'cntrSize': 8, 'isAsymmetric': False, 'clamp': 'percentile', 'percentile_limits': (0.1, 99.9), 'name': 'INT8_symmetric_clamp_p0.1'},
-        {'cntrSize': 8, 'isAsymmetric': False, 'clamp': 'std', 'std_multiplier': 3,'name': 'INT8_symmetric_clamp_std3'},
-        {'cntrSize': 8, 'isAsymmetric': False, 'clamp': 'std', 'std_multiplier': 4,'name': 'INT8_symmetric_clamp_std4'},
+        # {'cntrSize': 8, 'isAsymmetric': False, 'clamp': None, 'name': 'INT8_symmetric_noclamp'},
+        # {'cntrSize': 8, 'isAsymmetric': False, 'clamp': 'percentile', 'percentile_limits': (1, 99),'name': 'INT8_symmetric_clamp_p1'},
+        # {'cntrSize': 8, 'isAsymmetric': False, 'clamp': 'percentile', 'percentile_limits': (0.1, 99.9), 'name': 'INT8_symmetric_clamp_p0.1'},
+        # {'cntrSize': 8, 'isAsymmetric': False, 'clamp': 'std', 'std_multiplier': 3,'name': 'INT8_symmetric_clamp_std3'},
+        # {'cntrSize': 8, 'isAsymmetric': False, 'clamp': 'std', 'std_multiplier': 4,'name': 'INT8_symmetric_clamp_std4'},
 
-
-        {'cntrSize': 16, 'isAsymmetric': False, 'clamp': None, 'name': 'INT16_symmetric_noclamp'},
-        {'cntrSize': 16, 'isAsymmetric': False, 'clamp': 'percentile', 'percentile_limits': (1, 99),'name': 'INT16_symmetric_clamp_p1'},
-        {'cntrSize': 16, 'isAsymmetric': False, 'clamp': 'percentile', 'percentile_limits': (0.1, 99.9),'name': 'INT16_symmetric_clamp_p0.1'},
-        {'cntrSize': 16, 'isAsymmetric': False, 'clamp': 'std', 'std_multiplier': 3, 'name': 'INT16_symmetric_clamp_std3'},
-        {'cntrSize': 16, 'isAsymmetric': False, 'clamp': 'std', 'std_multiplier': 4,'name': 'INT16_symmetric_clamp_std4'},
-
+        #
+        # {'cntrSize': 16, 'isAsymmetric': False, 'clamp': None, 'name': 'INT16_symmetric_noclamp'},
+        # {'cntrSize': 16, 'isAsymmetric': False, 'clamp': 'percentile', 'percentile_limits': (1, 99),'name': 'INT16_symmetric_clamp_p1'},
+        # {'cntrSize': 16, 'isAsymmetric': False, 'clamp': 'percentile', 'percentile_limits': (0.1, 99.9),'name': 'INT16_symmetric_clamp_p0.1'},
+        # {'cntrSize': 16, 'isAsymmetric': False, 'clamp': 'std', 'std_multiplier': 3, 'name': 'INT16_symmetric_clamp_std3'},
+        # {'cntrSize': 16, 'isAsymmetric': False, 'clamp': 'std', 'std_multiplier': 4,'name': 'INT16_symmetric_clamp_std4'},
 
         {'cntrSize': 8, 'isAsymmetric': True, 'clamp': None, 'name': 'INT8_asymmetric_noclamp'},
-        {'cntrSize': 8, 'isAsymmetric': True, 'clamp': 'percentile', 'percentile_limits': (1, 99),'name': 'INT8_asymmetric_clamp_p1'},
-        {'cntrSize': 8, 'isAsymmetric': True, 'clamp': 'percentile', 'percentile_limits': (0.1, 99.9),'name': 'INT8_asymmetric_clamp_p0.1'},
-        {'cntrSize': 8, 'isAsymmetric': True, 'clamp': 'std', 'std_multiplier': 3,'name': 'INT8_asymmetric_clamp_std3'},
-        {'cntrSize': 8, 'isAsymmetric': True, 'clamp': 'std', 'std_multiplier': 4,'name': 'INT8_asymmetric_clamp_std4'},
+        # {'cntrSize': 8, 'isAsymmetric': True, 'clamp': 'percentile', 'percentile_limits': (1, 99),
+        #  'name': 'INT8_asymmetric_clamp_p1'},
+        # {'cntrSize': 8, 'isAsymmetric': True, 'clamp': 'percentile', 'percentile_limits': (0.1, 99.9),
+        #  'name': 'INT8_asymmetric_clamp_p0.1'},
+        # {'cntrSize': 8, 'isAsymmetric': True, 'clamp': 'std', 'std_multiplier': 3,
+        #  'name': 'INT8_asymmetric_clamp_std3'},
+        # {'cntrSize': 8, 'isAsymmetric': True, 'clamp': 'std', 'std_multiplier': 4,
+        #  'name': 'INT8_asymmetric_clamp_std4'},
 
-
-        {'cntrSize': 16, 'isAsymmetric': True, 'clamp': None, 'name': 'INT16_asymmetric_noclamp'},
-        {'cntrSize': 16, 'isAsymmetric': True, 'clamp': 'percentile', 'percentile_limits': (1, 99),'name': 'INT16_asymmetric_clamp_p1'},
-        {'cntrSize': 16, 'isAsymmetric': True, 'clamp': 'percentile', 'percentile_limits': (0.1, 99.9),'name': 'INT16_asymmetric_clamp_p0.1'},
-        {'cntrSize': 16, 'isAsymmetric': True, 'clamp': 'std', 'std_multiplier': 3,'name': 'INT16_asymmetric_clamp_std3'},
-        {'cntrSize': 16, 'isAsymmetric': True, 'clamp': 'std', 'std_multiplier': 4,'name': 'INT16_asymmetric_clamp_std4'},
+        # {'cntrSize': 16, 'isAsymmetric': True, 'clamp': None, 'name': 'INT16_asymmetric_noclamp'},
+        # {'cntrSize': 16, 'isAsymmetric': True, 'clamp': 'percentile', 'percentile_limits': (1, 99),'name': 'INT16_asymmetric_clamp_p1'},
+        # {'cntrSize': 16, 'isAsymmetric': True, 'clamp': 'percentile', 'percentile_limits': (0.1, 99.9),'name': 'INT16_asymmetric_clamp_p0.1'},
+        # {'cntrSize': 16, 'isAsymmetric': True, 'clamp': 'std', 'std_multiplier': 3,'name': 'INT16_asymmetric_clamp_std3'},
+        # {'cntrSize': 16, 'isAsymmetric': True, 'clamp': 'std', 'std_multiplier': 4,'name': 'INT16_asymmetric_clamp_std4'},
 
     ]
     for cfg in configs:
         if cfg['isAsymmetric']:
-            continue
+            signed = False
+        else:
+            signed = True
 
+        print("the signed is ", signed)
         print("\n==========================")
         print(f"Running for {cfg['name']} (cntrSize={cfg['cntrSize']}, isAsymmetric={cfg['isAsymmetric']})")
         cntrSize = cfg['cntrSize']
-        grid = generate_grid(cntrSize, signed=True, type='INT')
+        grid = generate_grid(cntrSize, signed=signed, type='INT')
         quantize_model_weights(
             model,
             grid,
             debug=True,
             clamp_outliers=cfg['clamp'],  # None / 'percentile' / 'std'
             percentile_limits=cfg.get('percentile_limits'),
-            std_multiplier = cfg.get('std_multiplier')
+            std_multiplier=cfg.get('std_multiplier'),
+            isAsymmetric=cfg['isAsymmetric']
         )
-        metrics = evaluate_on_image_folder(model, run_quantized_forward, preprocess_image, grid, image_dir)
+        metrics = evaluate_on_image_folder(
+            model,
+            lambda m, x, g, debug=False: run_quantized_forward(
+                m, x, g,
+                isAsymmetric=cfg['isAsymmetric'],
+                clamp_outliers=cfg['clamp'],
+                percentile_limits=cfg.get('percentile_limits', (1, 99)),
+                std_multiplier=cfg.get('std_multiplier', 3),
+                debug=debug
+            ),
+            preprocess_image,
+            grid,
+            image_dir
+        )
         print(f"Results for INT cntrSize={cntrSize}: {metrics}")
