@@ -151,60 +151,60 @@ def generate_grid(cntrSize, signed, expSize=1, type='INT'):
 #     return quantized_vec, scale, zero_point
 
 #___________________________________________________________________________________________________________________________________________________________________
-def quantize(vec, grid, clamp_outliers=None, percentile_limits=(1, 99), std_multiplier=3, asymmetric=False):
-    if not isinstance(vec, np.ndarray):
-        vec = np.array(vec)
-    if not isinstance(grid, np.ndarray):
-        grid = np.array(grid)
-
-    if not asymmetric and np.min(grid) >= 0:
-        raise ValueError("Symmetric quantization requires a signed grid (with negative values)")
-
-    if clamp_outliers is not None:
-        if clamp_outliers == "percentile":
-            lower_bnd = np.percentile(vec, percentile_limits[0])
-            upper_bnd = np.percentile(vec, percentile_limits[1])
-        elif clamp_outliers == "std":
-            mean = np.mean(vec, dtype=np.float64)
-            std = np.std(vec, dtype=np.float64)
-            lower_bnd = mean - std_multiplier * std
-            upper_bnd = mean + std_multiplier * std
-        vec = np.clip(vec, lower_bnd, upper_bnd)
-
-    if asymmetric:
-        min_val = np.min(vec)
-        max_val = np.max(vec)
-        qmin = np.min(grid)
-        qmax = np.max(grid)
-        if max_val - min_val < 1e-8:
-            print(f"Warning: Input range too small (min: {min_val}, max: {max_val}), using minimal scale")
-            scale = 1e-8 / (qmax - qmin)  # scale מינימלי
-            zero_point = qmin - (min_val / scale)
-            zero_point = int(np.round(zero_point))
-            scaled_vec = np.round(vec / scale + zero_point)
-            scaled_vec = np.clip(scaled_vec, qmin, qmax)
-            quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
-            return quantized_vec, scale, zero_point
-        scale = (max_val - min_val) / (qmax - qmin)
-        if scale < 1e-10:
-            scale = 1e-10
-        zero_point = qmin - (min_val / scale)
-        zero_point = int(np.round(zero_point))
-        scaled_vec = np.round(vec / scale + zero_point)
-        scaled_vec = np.clip(scaled_vec, qmin, qmax)
-        quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
-    else:
-        abs_max_vec = np.max(np.abs(vec))
-        abs_max_grid = np.max(np.abs(grid))
-        if abs_max_vec == 0 or abs_max_grid == 0:
-            raise ValueError("Invalid range in symmetric quantization")
-        scale = abs_max_vec / abs_max_grid
-        scaled_vec = vec / scale
-        zero_point = 0
-        scaled_vec = np.clip(scaled_vec, np.min(grid), np.max(grid))
-        quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
-
-    return quantized_vec, scale, zero_point
+# def quantize(vec, grid, clamp_outliers=None, percentile_limits=(1, 99), std_multiplier=3, asymmetric=False):
+#     if not isinstance(vec, np.ndarray):
+#         vec = np.array(vec)
+#     if not isinstance(grid, np.ndarray):
+#         grid = np.array(grid)
+#
+#     if not asymmetric and np.min(grid) >= 0:
+#         raise ValueError("Symmetric quantization requires a signed grid (with negative values)")
+#
+#     if clamp_outliers is not None:
+#         if clamp_outliers == "percentile":
+#             lower_bnd = np.percentile(vec, percentile_limits[0])
+#             upper_bnd = np.percentile(vec, percentile_limits[1])
+#         elif clamp_outliers == "std":
+#             mean = np.mean(vec, dtype=np.float64)
+#             std = np.std(vec, dtype=np.float64)
+#             lower_bnd = mean - std_multiplier * std
+#             upper_bnd = mean + std_multiplier * std
+#         vec = np.clip(vec, lower_bnd, upper_bnd)
+#
+#     if asymmetric:
+#         min_val = np.min(vec)
+#         max_val = np.max(vec)
+#         qmin = np.min(grid)
+#         qmax = np.max(grid)
+#         if max_val - min_val < 1e-8:
+#             print(f"Warning: Input range too small (min: {min_val}, max: {max_val}), using minimal scale")
+#             scale = 1e-8 / (qmax - qmin)  # scale מינימלי
+#             zero_point = qmin - (min_val / scale)
+#             zero_point = int(np.round(zero_point))
+#             scaled_vec = np.round(vec / scale + zero_point)
+#             scaled_vec = np.clip(scaled_vec, qmin, qmax)
+#             quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
+#             return quantized_vec, scale, zero_point
+#         scale = (max_val - min_val) / (qmax - qmin)
+#         if scale < 1e-10:
+#             scale = 1e-10
+#         zero_point = qmin - (min_val / scale)
+#         zero_point = int(np.round(zero_point))
+#         scaled_vec = np.round(vec / scale + zero_point)
+#         scaled_vec = np.clip(scaled_vec, qmin, qmax)
+#         quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
+#     else:
+#         abs_max_vec = np.max(np.abs(vec))
+#         abs_max_grid = np.max(np.abs(grid))
+#         if abs_max_vec == 0 or abs_max_grid == 0:
+#             raise ValueError("Invalid range in symmetric quantization")
+#         scale = abs_max_vec / abs_max_grid
+#         scaled_vec = vec / scale
+#         zero_point = 0
+#         scaled_vec = np.clip(scaled_vec, np.min(grid), np.max(grid))
+#         quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
+#
+#     return quantized_vec, scale, zero_point
 #___________________________________________________________________________________________________________________________________________________________________
 
 
@@ -212,19 +212,23 @@ def find_optimal_zero_point(vec, grid, scale, qmin, qmax):
     best_z = 0
     min_mse = float('inf')
     for z in range(qmin, qmax + 1):
-        quantized = np.round(vec / scale + z)
-        quantized = np.clip(quantized, qmin, qmax)
-        mse = np.mean((vec - (quantized - z) * scale) ** 2)
+        q = np.round(vec / scale + z)
+        q = np.clip(q, qmin, qmax)
+        mse = np.mean((vec - (q - z) * scale) ** 2)
         if mse < min_mse:
             min_mse = mse
             best_z = z
-    return best_z
+    return int(best_z)
 
 def quantize(vec, grid, clamp_outliers=None, percentile_limits=(1, 99), std_multiplier=3, asymmetric=False):
     if not isinstance(vec, np.ndarray):
         vec = np.array(vec)
     if not isinstance(grid, np.ndarray):
         grid = np.array(grid)
+
+    # qmin/qmax נגזרים מה-grid (מצופה להיות רציף ושלם ב-affine)
+    qmin = int(np.min(grid))
+    qmax = int(np.max(grid))
 
     if not asymmetric and np.min(grid) >= 0:
         raise ValueError("Symmetric quantization requires a signed grid (with negative values)")
@@ -238,38 +242,44 @@ def quantize(vec, grid, clamp_outliers=None, percentile_limits=(1, 99), std_mult
             std = np.std(vec, dtype=np.float64)
             lower_bnd = mean - std_multiplier * std
             upper_bnd = mean + std_multiplier * std
+        else:
+            raise ValueError("clamp_outliers must be 'percentile' or 'std'")
         vec = np.clip(vec, lower_bnd, upper_bnd)
 
     if asymmetric:
-        min_val = np.min(vec)
-        max_val = np.max(vec)
-        qmin = np.min(grid)
-        qmax = np.max(grid)
+        min_val = float(np.min(vec))
+        max_val = float(np.max(vec))
         if max_val - min_val < 1e-8:
             print(f"Warning: Input range too small (min: {min_val}, max: {max_val}), using minimal scale")
-            scale = 1e-8 / (qmax - qmin)
-            zero_point = qmin - (min_val / scale)
-            zero_point = int(np.round(zero_point))
+            scale = max(1e-10, 1e-8 / max(1, (qmax - qmin)))
+            zero_point = int(np.round(qmin - (min_val / scale)))
+            zero_point = int(np.clip(zero_point, qmin, qmax))
         else:
             scale = (max_val - min_val) / (qmax - qmin)
-            if scale < 1e-10:
-                scale = 1e-10
+            scale = max(scale, 1e-10)
             zero_point = find_optimal_zero_point(vec, grid, scale, qmin, qmax)
+
+        # ⬅ בלי "nearest grid": עובדים עם רמות שלמות בלבד
         scaled_vec = np.round(vec / scale + zero_point)
         scaled_vec = np.clip(scaled_vec, qmin, qmax)
-        quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
+        quantized_vec = scaled_vec.astype(np.int32)
+
     else:
-        abs_max_vec = np.max(np.abs(vec))
-        abs_max_grid = np.max(np.abs(grid))
+        abs_max_vec = float(np.max(np.abs(vec)))
+        abs_max_grid = float(np.max(np.abs(grid)))
         if abs_max_vec == 0 or abs_max_grid == 0:
             raise ValueError("Invalid range in symmetric quantization")
-        scale = abs_max_vec / abs_max_grid
-        scaled_vec = vec / scale
-        zero_point = 0
-        scaled_vec = np.clip(scaled_vec, np.min(grid), np.max(grid))
-        quantized_vec = np.array([grid[np.argmin(np.abs(grid - val))] for val in scaled_vec])
 
-    return quantized_vec, scale, zero_point
+        scale = abs_max_vec / abs_max_grid
+        scale = max(scale, 1e-10)
+        zero_point = 0
+
+        # ⬅ גם כאן לא ממפים ל-grid הקרוב; q שלם ואז קליפ לטווח
+        scaled_vec = np.round(vec / scale)
+        scaled_vec = np.clip(scaled_vec, -abs_max_grid, abs_max_grid)
+        quantized_vec = scaled_vec.astype(np.int32)
+
+    return quantized_vec, float(scale),int(zero_point)
 
 
 def preprocess_image(image_path):
@@ -302,10 +312,6 @@ def quantize_model_weights(model, grid, debug=True, clamp_outliers=None, percent
                 layer._quant_info = quant_info
                 if debug:
                     print(f"[Quantized] {name} ({layer.__class__.__name__}) - weight shape: {layer.weight.shape}, scale: {scale:.4g}")
-                    if name == 'fc' and w_q.shape[0] > 885:
-                        print(f"[Quantized] fc weights - min: {np.min(w_q)}, max: {np.max(w_q)}, mean: {np.mean(w_q)}")
-                        for cls in [428, 885, 74, 815, 125]:
-                            print(f"[Quantized] fc weights for class {cls} - min: {np.min(w_q[cls*512:(cls+1)*512])}, max: {np.max(w_q[cls*512:(cls+1)*512])}, mean: {np.mean(w_q[cls*512:(cls+1)*512])}")
             except Exception as e:
                 print(f"Error quantizing layer {name}: {e}")
         elif hasattr(layer, 'downsample') and isinstance(layer.downsample, nn.Sequential):
@@ -330,10 +336,6 @@ def quantize_model_weights(model, grid, debug=True, clamp_outliers=None, percent
                         sublayer._quant_info = quant_info
                         if debug:
                             print(f"[Quantized] {name}.downsample.{i} ({sublayer.__class__.__name__}) - weight shape: {sublayer.weight.shape}, scale: {scale:.4g}")
-                        if name == 'fc':
-                            print(f"[Quantized] fc weights - min: {np.min(w_q)}, max: {np.max(w_q)}, mean: {np.mean(w_q)}")
-                            for cls in [428, 885, 74, 815, 125, 904, 556]:
-                                print(f"[Quantized] fc weights for class {cls} - min: {np.min(w_q[cls * 512:(cls + 1) * 512])}, max: {np.max(w_q[cls * 512:(cls + 1) * 512])}, mean: {np.mean(w_q[cls * 512:(cls + 1) * 512])}")
                     except Exception as e:
                         print(f"Error quantizing downsample layer {name}.downsample.{i}: {e}")
     return model
@@ -355,35 +357,25 @@ def q_layer(x, layer, grid, isAsymmetric=False, clamp_outliers=None, percentile_
 
     w_q = layer._quant_info['w_q'].to(x.device)
     s_w = layer._quant_info['scale_w']
-    zero_point_w = layer._quant_info.get('zero_point_w', 0)
+    zero_point_w = layer._quant_info['zero_point_w']
 
     if 'bias' in layer._quant_info:
         b_w = layer._quant_info['bias']
         b_w = torch.tensor(b_w.reshape(layer.bias.shape), dtype=torch.float32).to(x.device)
     else:
         b_w = None
-
+# 2 cases: symmetric and asymmetric quantization, shift the input and weights accordingly if asymmetric quantization
     if isAsymmetric:
-        x_q_shifted = x_q - zero_point_x
-        w_q_shifted = w_q - zero_point_w
-        if isinstance(layer, torch.nn.Conv2d):
-            z_q = F.conv2d(x_q_shifted, w_q_shifted, bias=b_w, stride=layer.stride,
-                           padding=layer.padding, dilation=layer.dilation, groups=layer.groups)
-            z_q += (zero_point_x * zero_point_w * x_q.numel() / layer.groups)
-        elif isinstance(layer, torch.nn.Linear):
-            z_q = F.linear(x_q_shifted, w_q_shifted, bias=b_w)
-            z_q += (zero_point_x * zero_point_w * x_q.numel())
-        else:
-            raise NotImplementedError
-    else:
-        if isinstance(layer, torch.nn.Conv2d):
-            z_q = F.conv2d(x_q, w_q, bias=b_w, stride=layer.stride,
-                           padding=layer.padding, dilation=layer.dilation, groups=layer.groups)
-        elif isinstance(layer, torch.nn.Linear):
-            z_q = F.linear(x_q, w_q, bias=b_w)
-        else:
-            raise NotImplementedError
+        x_q = x_q - zero_point_x
+        w_q = w_q - zero_point_w
 
+    if isinstance(layer, torch.nn.Conv2d):
+        z_q = F.conv2d(x_q, w_q, bias=b_w, stride=layer.stride,
+                           padding=layer.padding, dilation=layer.dilation, groups=layer.groups)
+    elif isinstance(layer, torch.nn.Linear):
+        z_q = F.linear(x_q, w_q, bias=b_w)
+    else:
+        raise NotImplementedError
     return z_q * (s_x * s_w)
 
 def run_quantized_forward(model, x, grid,
@@ -403,88 +395,104 @@ def run_quantized_forward(model, x, grid,
         if torch.isnan(x).any() or torch.isinf(x).any():
             print("NaN or Inf detected after maxpool")
 
+        # layer1
         for block in model.layer1:
-            residual = block.downsample(x) if block.downsample else x
+            residual = x
             if isinstance(block.downsample, nn.Sequential):
                 for ds_layer in block.downsample:
                     if isinstance(ds_layer, nn.Conv2d):
                         if debug: print("Layer1 - downsample conv")
-                        residual = q_layer(x, ds_layer, grid, isAsymmetric, clamp_outliers, percentile_limits,
-                                           std_multiplier)
+                        residual = q_layer(residual, ds_layer, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
                     elif isinstance(ds_layer, nn.BatchNorm2d):
+                        residual = ds_layer(residual)
+                    else:
                         residual = ds_layer(residual)
 
             if debug: print("Layer1 - conv1")
             x = q_layer(x, block.conv1, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
             x = block.bn1(x)
-            x = model.relu(x)
+            x = block.relu(x)
+
             if debug: print("Layer1 - conv2")
             x = q_layer(x, block.conv2, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
             x = block.bn2(x)
-            x += residual
+
+            x = x + residual
             x = block.relu(x)
 
+        # layer2
         for block in model.layer2:
-            residual = block.downsample(x) if block.downsample else x
+            residual = x
             if isinstance(block.downsample, nn.Sequential):
                 for ds_layer in block.downsample:
                     if isinstance(ds_layer, nn.Conv2d):
                         if debug: print("Layer2 - downsample conv")
-                        residual = q_layer(x, ds_layer, grid, isAsymmetric, clamp_outliers, percentile_limits,
-                                           std_multiplier)
+                        residual = q_layer(residual, ds_layer, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
                     elif isinstance(ds_layer, nn.BatchNorm2d):
+                        residual = ds_layer(residual)
+                    else:
                         residual = ds_layer(residual)
 
             if debug: print("Layer2 - conv1")
             x = q_layer(x, block.conv1, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
             x = block.bn1(x)
-            x = model.relu(x)
+            x = block.relu(x)
+
             if debug: print("Layer2 - conv2")
             x = q_layer(x, block.conv2, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
             x = block.bn2(x)
-            x += residual
+
+            x = x + residual
             x = block.relu(x)
 
+        # layer3
         for block in model.layer3:
-            residual = block.downsample(x) if block.downsample else x
+            residual = x
             if isinstance(block.downsample, nn.Sequential):
                 for ds_layer in block.downsample:
                     if isinstance(ds_layer, nn.Conv2d):
                         if debug: print("Layer3 - downsample conv")
-                        residual = q_layer(x, ds_layer, grid, isAsymmetric, clamp_outliers, percentile_limits,
-                                           std_multiplier)
+                        residual = q_layer(residual, ds_layer, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
                     elif isinstance(ds_layer, nn.BatchNorm2d):
+                        residual = ds_layer(residual)
+                    else:
                         residual = ds_layer(residual)
 
             if debug: print("Layer3 - conv1")
             x = q_layer(x, block.conv1, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
             x = block.bn1(x)
-            x = model.relu(x)
+            x = block.relu(x)
+
             if debug: print("Layer3 - conv2")
             x = q_layer(x, block.conv2, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
             x = block.bn2(x)
-            x += residual
+
+            x = x + residual
             x = block.relu(x)
 
+        # layer4
         for block in model.layer4:
-            residual = block.downsample(x) if block.downsample else x
+            residual = x
             if isinstance(block.downsample, nn.Sequential):
                 for ds_layer in block.downsample:
                     if isinstance(ds_layer, nn.Conv2d):
                         if debug: print("Layer4 - downsample conv")
-                        residual = q_layer(x, ds_layer, grid, isAsymmetric, clamp_outliers, percentile_limits,
-                                           std_multiplier)
+                        residual = q_layer(residual, ds_layer, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
                     elif isinstance(ds_layer, nn.BatchNorm2d):
+                        residual = ds_layer(residual)
+                    else:
                         residual = ds_layer(residual)
 
             if debug: print("Layer4 - conv1")
             x = q_layer(x, block.conv1, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
             x = block.bn1(x)
             x = block.relu(x)
+
             if debug: print("Layer4 - conv2")
             x = q_layer(x, block.conv2, grid, isAsymmetric, clamp_outliers, percentile_limits, std_multiplier)
             x = block.bn2(x)
-            x += residual
+
+            x = x + residual
             x = block.relu(x)
 
         x = model.avgpool(x)
@@ -622,7 +630,7 @@ def evaluate_on_image_folder(model, run_quantized_forward, preprocess_fn, grid, 
             if file.lower().endswith(('.jpg', '.jpeg', '.png')):
                 image_paths.append(os.path.join(root, file))
 
-    # הגבל ל-3 תמונות ראשונות
+    # הגבל ל-X תמונות ראשונות
     image_paths = image_paths[:20]
     print(f"Found {len(image_paths)} images in {image_dir}")
 
@@ -637,30 +645,29 @@ def evaluate_on_image_folder(model, run_quantized_forward, preprocess_fn, grid, 
             'mean_KL_divergence': float('nan'),
             'topk_accuracy': float('nan')
         }
-
+# tqdm is used to show progress bar
     for img_path in tqdm(image_paths, desc="Evaluating"):
         try:
             image_tensor = preprocess_fn(img_path)
             with torch.no_grad():
-                output_fp = model(image_tensor)
+                output_original = model(image_tensor)
                 output_q = run_quantized_forward(model, image_tensor, grid, debug=False)
+                print( "output_original:", output_original.shape, "\noutput_q:", output_q.shape)
 
                 # חישוב הסתברויות
-                prob_fp = torch.softmax(output_fp, dim=1).cpu().numpy() + 1e-10  # הוספת ערך קטן למניעת log(0)
+                prob_original = torch.softmax(output_original, dim=1).cpu().numpy() + 1e-10  # הוספת ערך קטן למניעת log(0)
                 prob_q = torch.softmax(output_q, dim=1).cpu().numpy() + 1e-10
 
                 # חישוב top-1
-                top1_fp = np.argmax(prob_fp, axis=1).item()
+                top1_fp = np.argmax(prob_original, axis=1).item()
                 top1_q = np.argmax(prob_q, axis=1).item()
 
                 # הדפסת top-1 והסתברויות עבור מחלקות ספציפיות
                 print(f"Image {img_path}: top1_fp: {top1_fp}, top1_q: {top1_q}")
                 print(
-                    f"Probabilities for top1_fp (class {top1_fp}): fp={prob_fp[0, top1_fp]:.4f}, q={prob_q[0, top1_fp]:.4f}")
+                    f"Probabilities for top1_fp (class {top1_fp}): fp={prob_original[0, top1_fp]:.4f}, q={prob_q[0, top1_fp]:.4f}")
                 print(
-                    f"Probabilities for top1_q (class {top1_q}): fp={prob_fp[0, top1_q]:.4f}, q={prob_q[0, top1_q]:.4f}")
-                for cls in [428, 885, 74, 815, 125, 904, 556]:
-                    print(f"Probabilities for class {cls}: fp={prob_fp[0, cls]:.4f}, q={prob_q[0, cls]:.4f}")
+                    f"Probabilities for top1_q (class {top1_q}): fp={prob_original[0, top1_q]:.4f}, q={prob_q[0, top1_q]:.4f}")
 
                 # חישוב top-k accuracy
                 topk_q = np.argsort(prob_q, axis=1)[0, -k:][::-1]  # Top-k מחלקות
@@ -672,12 +679,12 @@ def evaluate_on_image_folder(model, run_quantized_forward, preprocess_fn, grid, 
                 y_pred_all.append(top1_q)
 
                 # חישוב מדדי שגיאה
-                mse_list.append(mean_squared_error(prob_fp, prob_q))
-                mae_list.append(mean_absolute_error(prob_fp, prob_q))
-                max_err_list.append(np.max(np.abs(prob_fp - prob_q)))
-                delta_list.append(np.abs(np.max(prob_fp) - np.max(prob_q)))
-                kl_div_list.append(entropy(prob_fp[0], prob_q[0]))
-                print(f"Image {img_path}: KL Divergence: {entropy(prob_fp[0], prob_q[0]):.4f}")
+                mse_list.append(mean_squared_error(prob_original, prob_q))
+                mae_list.append(mean_absolute_error(prob_original, prob_q))
+                max_err_list.append(np.max(np.abs(prob_original - prob_q)))
+                delta_list.append(np.abs(np.max(prob_original) - np.max(prob_q)))
+                kl_div_list.append(entropy(prob_original[0], prob_q[0]))
+                print(f"Image {img_path}: KL Divergence: {entropy(prob_original[0], prob_q[0]):.4f}")
 
         except Exception as e:
             print(f"Error processing image {img_path}: {e}")
