@@ -148,7 +148,7 @@ def write_results_to_file(statistics: str, model_name: str) -> None:
     Write results to a file with timestamp
     """
     try:
-        report_directory = os.path.join(os.getcwd(), "reports")
+        report_directory = os.path.join(os.getcwd(), "../../reports")
         if not os.path.exists(report_directory):
             os.makedirs(report_directory)
 

@@ -1,0 +1,53 @@
+Detailed Statistical Analysis
+==================================================
+
+1. Model Performance Comparison
+------------------------------
+
+ResNet18 Analysis:
+Average Mean Confidence: 0.6975
+Best Quantization Method: RANDOM
+
+ResNet50 Analysis:
+Average Mean Confidence: 0.3212
+Best Quantization Method: INT8
+
+2. Quantization Method Comparison
+------------------------------
+
+None Analysis:
+Average F1 Score: 1.0000
+
+INT8 Analysis:
+Average F1 Score: 0.7824
+
+INT16 Analysis:
+Average F1 Score: 0.8442
+
+F2P_li_h2 Analysis:
+Average F1 Score: 0.8442
+
+F2P_lr_h2 Analysis:
+Average F1 Score: 0.8166
+
+F2P_sr_h2 Analysis:
+Average F1 Score: 0.7680
+
+F2P_si_h2 Analysis:
+Average F1 Score: 0.8442
+
+RANDOM Analysis:
+Average F1 Score: 0.0000
+
+3. Best Configurations
+------------------------------
+
+Best F1 Score Configuration:
+Model: ResNet18
+Quantization: None
+F1 Score: 1.0000
+
+Best Confidence Configuration:
+Model: ResNet18
+Quantization: RANDOM
+Mean Confidence: 1.0000
